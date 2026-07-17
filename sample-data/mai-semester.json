@@ -1,0 +1,16 @@
+{
+  "student": { "name": "Mai Nguyen", "locale": "vi", "coachMode": "discipline" },
+  "courses": [
+    { "id": "programming", "name": "Programming", "currentScore": 54, "targetScore": 78 },
+    { "id": "marketing", "name": "Marketing", "currentScore": 62, "targetScore": 75 },
+    { "id": "statistics", "name": "Statistics", "currentScore": 71, "targetScore": 78 }
+  ],
+  "tasks": [
+    { "id": "api-design", "courseId": "programming", "title": "Assignment 3: API design", "due": "2026-06-18T23:59:00", "gradeWeight": 30, "estimatedMinutes": 45, "priorityScore": 95 },
+    { "id": "marketing-quiz", "courseId": "marketing", "title": "Research quiz 04", "due": "2026-06-17T17:00:00", "gradeWeight": 5, "estimatedMinutes": 25, "priorityScore": 68 },
+    { "id": "statistics-set", "courseId": "statistics", "title": "Week 6 problem set", "due": "2026-06-19T23:59:00", "gradeWeight": 10, "estimatedMinutes": 60, "priorityScore": 54 }
+  ],
+  "availability": [
+    { "start": "2026-06-16T16:00:00", "end": "2026-06-16T19:00:00" }
+  ]
+}

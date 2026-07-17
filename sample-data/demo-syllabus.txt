@@ -1,0 +1,18 @@
+CS304 Programming - Fall 2026
+
+Current score: 54%
+Target score: 78%
+
+Assessment schedule
+
+- Assignment 3: API design
+  Due: 2026-07-18 23:59 Asia/Ho_Chi_Minh
+  Weight: 30% of final course grade
+  Expected first study block: 45 minutes
+
+- Research quiz 04
+  Due: 2026-07-17 17:00 Asia/Ho_Chi_Minh
+  Weight: 5% of final course grade
+  Expected study time: 25 minutes
+
+Students should verify every extracted deadline and grade weight before adding it to a study plan.
