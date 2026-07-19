@@ -57,4 +57,4 @@ Advanced settings expose each reminder and replanning boundary after onboarding.
 
 ## Current build coverage
 
-The hackathon slice implements the complete student decision loop, API-side review/approval boundaries, deterministic scoring/scheduling, sample PDF/text and ICS inputs, and the read-only extension preview. Google/Canvas OAuth callbacks, production PostgreSQL persistence, a field-level extraction editor, daily email delivery, and the institution surface remain post-demo milestones. The current build exposes no institution-facing student data.
+The current build implements private account onboarding, PostgreSQL/Supabase production persistence, the complete student decision loop, API-side review/approval boundaries, deterministic scoring/scheduling, sample PDF/text and ICS inputs, and the read-only extension preview. Google/Canvas OAuth callbacks, a field-level extraction editor, email verification/password reset, daily email delivery, and the institution surface remain post-demo milestones. The current build exposes no institution-facing student data.

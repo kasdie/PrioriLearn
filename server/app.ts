@@ -83,6 +83,50 @@ function publicUser(user: AuthContext['user']) {
   return safeUser
 }
 
+function createAuthRateLimit(options: { maxAttempts: number; windowMs: number }): RequestHandler {
+  const buckets = new Map<string, { attempts: number; resetsAt: number }>()
+  const maxBuckets = 5_000
+
+  return (request, response, next) => {
+    const now = Date.now()
+    const key = `${request.path}:${request.ip ?? request.socket.remoteAddress ?? 'unknown'}`
+    let bucket = buckets.get(key)
+
+    if (!bucket || bucket.resetsAt <= now) {
+      if (!bucket && buckets.size >= maxBuckets) {
+        for (const [existingKey, existingBucket] of buckets) {
+          if (existingBucket.resetsAt <= now) buckets.delete(existingKey)
+        }
+        if (buckets.size >= maxBuckets) {
+          const oldestKey = buckets.keys().next().value as string | undefined
+          if (oldestKey) buckets.delete(oldestKey)
+        }
+      }
+      bucket = { attempts: 0, resetsAt: now + options.windowMs }
+      buckets.set(key, bucket)
+    }
+
+    const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetsAt - now) / 1_000))
+    response.setHeader('RateLimit-Limit', String(options.maxAttempts))
+    response.setHeader('RateLimit-Remaining', String(Math.max(0, options.maxAttempts - bucket.attempts - 1)))
+    response.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetsAt / 1_000)))
+
+    if (bucket.attempts >= options.maxAttempts) {
+      response.setHeader('Retry-After', String(retryAfterSeconds))
+      response.status(429).json({
+        error: {
+          code: 'AUTH_RATE_LIMITED',
+          message: 'Too many authentication attempts. Wait before trying again.',
+        },
+      })
+      return
+    }
+
+    bucket.attempts += 1
+    next()
+  }
+}
+
 function validateExtractionDates(extraction: z.infer<typeof DocumentExtractionSchema>) {
   const warnings = [...extraction.warnings]
   const tasks = extraction.tasks.map((task) => {
@@ -119,8 +163,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const app = express()
 
   app.disable('x-powered-by')
+  app.set('trust proxy', 1)
   app.use(cors({ origin: config.appOrigin, credentials: true }))
   app.use(express.json({ limit: '1mb' }))
+  const authRateLimit = createAuthRateLimit({
+    maxAttempts: config.authRateLimitMax,
+    windowMs: config.authRateLimitWindowMs,
+  })
 
   const uploadDocument = multer({
     storage: multer.memoryStorage(),
@@ -142,6 +191,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         return
       }
       response.locals.auth = auth
+      response.locals.sessionToken = token
       next()
     })().catch(next)
   }
@@ -157,7 +207,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     })
   })
 
-  app.post('/api/auth/register', asyncRoute(async (request, response) => {
+  app.post('/api/auth/register', authRateLimit, asyncRoute(async (request, response) => {
     const input = parseBody(RegisterInputSchema, request.body)
     try {
       const user = await repository.createPersonalAccount(input)
@@ -171,7 +221,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     }
   }))
 
-  app.post('/api/auth/login', asyncRoute(async (request, response) => {
+  app.post('/api/auth/login', authRateLimit, asyncRoute(async (request, response) => {
     const input = parseBody(LoginInputSchema, request.body)
     const user = await repository.findUserByEmail(input.email)
     if (!user || !(await verifyPassword(input.password, user.passwordHash))) {
@@ -181,7 +231,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ token, user: publicUser(user), tenant: await repository.getTenant(user.tenantId) })
   }))
 
-  app.post('/api/auth/demo', asyncRoute(async (_request, response) => {
+  app.post('/api/auth/demo', authRateLimit, asyncRoute(async (_request, response) => {
     const user = await repository.getDemoUser()
     const token = await repository.createSession(user)
     response.json({ token, user: publicUser(user), tenant: await repository.getTenant(user.tenantId) })
@@ -191,6 +241,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const { user, tenant } = getAuth(response)
     response.json({ user: publicUser(user), tenant })
   })
+
+  app.post('/api/auth/logout', requireAuth, asyncRoute(async (_request, response) => {
+    await repository.revokeSession(response.locals.sessionToken as string)
+    response.status(204).end()
+  }))
 
   app.get('/api/dashboard', requireAuth, asyncRoute(async (_request, response) => {
     const { tenant } = getAuth(response)

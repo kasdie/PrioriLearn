@@ -31,14 +31,15 @@ The implementation uses the Responses API with an `input_file` and Zod-backed st
 
 ## Demo path
 
-1. Open **Dữ liệu**, upload `sample-data/demo-syllabus.txt`, review the extraction, then confirm it.
-2. Optionally import `sample-data/demo-calendar.ics`; calendar data also remains a draft until confirmation.
-3. Return to **Hôm nay**, inspect the enlarged priority score and Cost of Delay warning, then start focus.
-4. Open **Kế hoạch** and approve the versioned proposal.
-5. Open **Coach**, choose **Mình đang bị kẹt**, and approve the smaller replan proposal.
-6. Use the browser icon in the top bar to preview the read-only Canvas companion.
+1. Create a private account, sign in, or explicitly choose **Dùng workspace demo** for seeded data.
+2. Open **Dữ liệu**, upload `sample-data/demo-syllabus.txt`, review the extraction, then confirm it.
+3. Optionally import `sample-data/demo-calendar.ics`; calendar data also remains a draft until confirmation.
+4. Return to **Hôm nay**, inspect the enlarged priority score and Cost of Delay warning, then start focus.
+5. Open **Kế hoạch** and approve the versioned proposal.
+6. Open **Coach**, choose **Mình đang bị kẹt**, and approve the smaller replan proposal.
+7. Use the browser icon in the top bar to preview the read-only Canvas companion.
 
-The frontend falls back to local demo interactions if the API is stopped. The API itself exposes the active provider through `/api/health`, so demo and model-backed output are never silently confused.
+Authentication and workspace data require the API. The client never enters the shared demo implicitly, and logout revokes the active server session. The API exposes the active provider through `/api/health`, so demo and model-backed extraction are never silently confused.
 
 ## Verify
 
@@ -48,7 +49,7 @@ npm.cmd test
 npm.cmd run build
 ```
 
-The test suite covers scoring weights, Cost of Delay, coach-mode limits, calendar conflicts, tenant isolation, extraction confirmation, versioned plan/replan approval, ICS review, and 30-day raw-file purging.
+The test suite covers account/session lifecycle, auth rate limits, scoring weights, Cost of Delay, coach-mode limits, calendar conflicts, tenant isolation, extraction confirmation, versioned plan/replan approval, ICS review, and 30-day raw-file purging.
 
 ## PostgreSQL schema
 
@@ -67,7 +68,7 @@ The production topology is deliberately split: Vercel hosts the React client, Re
 
 1. In Supabase Storage, create the private bucket named in `SUPABASE_STORAGE_BUCKET` (the default is `priorilearn-documents`). Do not make it public.
 2. In Render, create a new **Blueprint** from this repository. It reads [`render.yaml`](render.yaml) and starts the compiled API with `npm start`. Render Free does not run a pre-deploy command, so run the idempotent migration manually before the first deployment.
-3. When Render asks for values, add `DATABASE_URL`, `SUPABASE_URL` (the Project URL root, not `/rest/v1`), `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`, and set `APP_ORIGIN` to the exact Vercel Production URL. `OPENAI_API_KEY` is optional; without it, the deterministic demo extractor remains active.
+3. When Render asks for values, add `DATABASE_URL`, `SUPABASE_URL` (the Project URL root, not `/rest/v1`), `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`, and set `APP_ORIGIN` to the exact Vercel Production URL. `AUTH_RATE_LIMIT_MAX` and `AUTH_RATE_LIMIT_WINDOW_MS` are optional tuning values. `OPENAI_API_KEY` is optional; without it, the deterministic demo extractor remains active.
 4. The committed `.env.production` supplies the public Render API origin for this deployment. In Vercel, `VITE_API_ORIGIN` may override it when the API host changes; use the URL with no trailing slash and no `/api` suffix, then redeploy the frontend.
 5. Open `https://<render-service>.onrender.com/api/health`. A production configuration reports `persistence: "postgres"` and `storage: "supabase"`.
 

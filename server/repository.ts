@@ -28,6 +28,7 @@ export interface Repository {
   getDemoUser(): Awaitable<User>
   createSession(user: User): Awaitable<string>
   resolveSession(token: string): Awaitable<AuthSession | undefined>
+  revokeSession(token: string): Awaitable<boolean>
   createCourse(tenantId: string, input: Pick<Course, 'code' | 'name' | 'currentScore' | 'targetScore'> & { sourceDocumentId?: string }): Awaitable<Course>
   getCourse(tenantId: string, courseId: string): Awaitable<Course | undefined>
   listCourses(tenantId: string): Awaitable<Course[]>
@@ -232,6 +233,10 @@ export class InMemoryRepository implements Repository {
     const user = this.users.get(session.userId)
     const tenant = this.tenants.get(session.tenantId)
     return user && tenant ? { user, tenant } : undefined
+  }
+
+  revokeSession(token: string): boolean {
+    return this.sessions.delete(token)
   }
 
   createCourse(

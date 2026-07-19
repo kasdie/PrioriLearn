@@ -25,6 +25,41 @@ describe('PrioriLearn API', () => {
     expect(response.body).toMatchObject({ status: 'ok', persistence: 'memory', aiProvider: 'deterministic-demo' })
   })
 
+  it('creates a private account and revokes its session on logout', async () => {
+    const registration = await request(context.app)
+      .post('/api/auth/register')
+      .send({ email: 'student@example.com', password: 'strong-password', name: 'New Student', locale: 'en' })
+      .expect(201)
+    const privateToken = registration.body.token as string
+    const privateAuth = { Authorization: `Bearer ${privateToken}` }
+
+    expect(registration.body.user).toMatchObject({ email: 'student@example.com', name: 'New Student', locale: 'en' })
+    expect(registration.body.user).not.toHaveProperty('passwordHash')
+
+    const dashboard = await request(context.app).get('/api/dashboard').set(privateAuth).expect(200)
+    expect(dashboard.body.rankedTasks).toEqual([])
+
+    await request(context.app).get('/api/me').set(privateAuth).expect(200)
+    await request(context.app).post('/api/auth/logout').set(privateAuth).expect(204)
+    await request(context.app).get('/api/me').set(privateAuth).expect(401)
+
+    const login = await request(context.app)
+      .post('/api/auth/login')
+      .send({ email: 'student@example.com', password: 'strong-password' })
+      .expect(200)
+    expect(login.body.token).not.toBe(privateToken)
+  })
+
+  it('rate limits repeated authentication attempts', async () => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await request(context.app).post('/api/auth/login').send({}).expect(400)
+    }
+
+    const blocked = await request(context.app).post('/api/auth/login').send({}).expect(429)
+    expect(blocked.body.error.code).toBe('AUTH_RATE_LIMITED')
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0)
+  })
+
   it('keeps extracted data out of planning until the student confirms it', async () => {
     const before = await request(context.app).get('/api/tasks').set(authorized()).expect(200)
     const uploaded = await request(context.app)

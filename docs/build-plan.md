@@ -4,8 +4,9 @@
 
 - [x] Responsive React/TypeScript student experience with Vietnamese/English toggle.
 - [x] Enlarged priority score and highlighted Cost of Delay warning.
-- [x] Node/TypeScript API with email/password and seeded demo sessions.
-- [x] Tenant-scoped domain repository and PostgreSQL migration/RLS model.
+- [x] Node/TypeScript API with real account onboarding, revocable sessions, explicit demo access, and auth rate limits.
+- [x] Tenant-scoped in-memory/PostgreSQL repositories, production migrations, and RLS model.
+- [x] Supabase private object storage with upload, purge, document deletion, and account deletion paths.
 - [x] OpenAI Responses API adapter plus credential-free deterministic provider.
 - [x] PDF/text upload, structured extraction, review confirmation, and 30-day purge.
 - [x] ICS preview/confirmation and Canvas/Google graceful connector fallbacks.
@@ -18,11 +19,15 @@
 
 ### Milestone 1: Durable private alpha
 
-- Implement the transactional PostgreSQL repository and run API integration tests against a disposable database.
-- Move uploads to S3-compatible object storage; verify lifecycle purge and delete retries.
-- Add secure cookie sessions, email verification, password reset, request rate limits, and secret rotation.
-- Build the full field-level extraction editor and manual course/task forms.
-- Add structured logs, traces, error reporting, backups, and restore drills.
+- [x] Implement the transactional PostgreSQL repository and production migrations.
+- [ ] Add a disposable-PostgreSQL integration suite to CI.
+- [x] Move uploads to Supabase private object storage and preserve lifecycle purge/account deletion.
+- [ ] Add durable retry handling for failed object deletions.
+- [x] Replace automatic shared-demo entry with real registration/login/logout UI and tenant-private workspaces.
+- [x] Add per-IP/route authentication rate limits with configurable thresholds.
+- [ ] Move browser auth to CSRF-safe HttpOnly cookies, then add email verification, password reset, and secret rotation.
+- [ ] Build the full field-level extraction editor plus manual course editing; manual task entry is shipped.
+- [ ] Add structured logs, traces, error reporting, backups, and restore drills.
 
 Exit gate: 20-30 invited students can use the app for two weeks without shared credentials or manual data repair.
 
@@ -62,6 +67,8 @@ Exit gate: no institution role can query individual tasks, risk, plans, check-in
 | Calendar conflict | Yes | Session starts after the busy block |
 | Nhẹ/Tập trung/Kỷ luật | Yes | Session cap is 20/35/45 minutes |
 | Cross-tenant task access | Yes | HTTP 404 with no data disclosure |
+| Account session lifecycle | Yes | Registration is tenant-private; logout immediately revokes the token |
+| Repeated auth attempts | Yes | HTTP 429 with `Retry-After` after the configured limit |
 | Expired raw document | Yes | Object and metadata are deleted |
 | ICS import | Yes | Draft first, persistence only after confirmation |
 | Connector denial/revocation | Partial | Fallback remains available; full OAuth tests before alpha |

@@ -20,7 +20,9 @@ import {
   LayoutDashboard,
   Link2,
   ListChecks,
+  LoaderCircle,
   LockKeyhole,
+  LogOut,
   MoreHorizontal,
   PanelTop,
   Play,
@@ -34,7 +36,8 @@ import {
   X,
 } from 'lucide-react'
 import focusImage from './assets/study-focus.png'
-import { prioriApi, type ApiCourse, type ApiDashboard, type ApiPlan, type ApiReplanProposal } from './lib/api'
+import { AuthScreen } from './AuthScreen'
+import { prioriApi, type ApiCourse, type ApiDashboard, type ApiPlan, type ApiReplanProposal, type ApiSession } from './lib/api'
 import './App.css'
 
 type Locale = 'vi' | 'en'
@@ -49,7 +52,6 @@ const copy = {
     plan: 'Kế hoạch',
     imports: 'Dữ liệu',
     coach: 'Coach',
-    morning: 'Chào buổi sáng, Mai.',
     ready: 'Bạn có 2 giờ 15 phút thực sự trống hôm nay.',
     now: 'Làm việc này ngay',
     why: 'Tại sao là việc này?',
@@ -69,7 +71,6 @@ const copy = {
     plan: 'Plan',
     imports: 'Data',
     coach: 'Coach',
-    morning: 'Good morning, Mai.',
     ready: 'You have 2 hours and 15 minutes that are truly open today.',
     now: 'Do this now',
     why: 'Why this task?',
@@ -104,6 +105,10 @@ function formatDue(dueAt: string | null, locale: Locale): string {
 
 function App() {
   const [locale, setLocale] = useState<Locale>('vi')
+  const [session, setSession] = useState<ApiSession | null>(null)
+  const [authChecking, setAuthChecking] = useState(true)
+  const [authNotice, setAuthNotice] = useState<string | undefined>()
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [activeView, setActiveView] = useState<View>('today')
   const [planApproved, setPlanApproved] = useState(false)
   const [replanOpen, setReplanOpen] = useState(false)
@@ -130,6 +135,7 @@ function App() {
   const [manualTask, setManualTask] = useState({ courseId: '', title: '', dueAt: '', gradeWeight: '', estimatedMinutes: '45' })
   const documentInputRef = useRef<HTMLInputElement>(null)
   const calendarInputRef = useRef<HTMLInputElement>(null)
+  const accountMenuRef = useRef<HTMLDivElement>(null)
   const t = copy[locale]
   const recommendation = dashboard?.recommendation ?? null
   const rankedTasks = dashboard?.rankedTasks ?? []
@@ -141,14 +147,72 @@ function App() {
     setManualTask((current) => current.courseId || taskData.courses.length === 0 ? current : { ...current, courseId: taskData.courses[0]?.id ?? '' })
   }
 
+  const handleAuthenticated = async (nextSession: ApiSession) => {
+    setSession(nextSession)
+    setLocale(nextSession.user.locale)
+    setAuthNotice(undefined)
+    setDashboardBusy(true)
+    try {
+      await refreshWorkspace()
+    } catch {
+      setToast(nextSession.user.locale === 'vi'
+        ? 'Đã đăng nhập nhưng chưa thể tải dữ liệu học tập.'
+        : 'Signed in, but your study data could not be loaded.')
+    } finally {
+      setDashboardBusy(false)
+    }
+  }
+
+  const clearWorkspace = () => {
+    setSession(null)
+    setDashboard(null)
+    setCourses([])
+    setApiPlan(null)
+    setApiReplan(null)
+    setPlanApproved(false)
+    setReplanApproved(false)
+    setActiveView('today')
+    setAccountMenuOpen(false)
+  }
+
+  useEffect(() => {
+    if (!accountMenuOpen) return
+    const closeMenu = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAccountMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [accountMenuOpen])
+
+  useEffect(() => {
+    const handleExpiredSession = () => {
+      clearWorkspace()
+      setAuthNotice(locale === 'vi'
+        ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
+        : 'Your session expired. Sign in again.')
+    }
+    window.addEventListener('priorilearn:session-expired', handleExpiredSession)
+    return () => window.removeEventListener('priorilearn:session-expired', handleExpiredSession)
+  }, [locale])
+
   useEffect(() => {
     void (async () => {
       try {
-        await prioriApi.bootstrap()
-        await refreshWorkspace()
+        const restoredSession = await prioriApi.bootstrap()
+        if (restoredSession) await handleAuthenticated(restoredSession)
       } catch {
-        setToast('Could not load your data. Check the API and database connection.')
+        setAuthNotice(window.navigator.language.toLowerCase().startsWith('vi')
+          ? 'API đang chưa phản hồi. Render có thể cần ít phút để khởi động lại.'
+          : 'The API is not responding yet. Render may need a moment to wake up.')
       } finally {
+        setAuthChecking(false)
         setDashboardBusy(false)
       }
     })()
@@ -326,6 +390,55 @@ function App() {
     }
   }
 
+  const logout = async () => {
+    setAccountMenuOpen(false)
+    try {
+      await prioriApi.logout()
+      setAuthNotice(undefined)
+    } catch {
+      setAuthNotice(locale === 'vi'
+        ? 'Bạn đã đăng xuất trên thiết bị này. Máy chủ chưa xác nhận do mất kết nối.'
+        : 'You are signed out on this device. The server could not confirm because the connection failed.')
+    } finally {
+      clearWorkspace()
+    }
+  }
+
+  const hour = new Date().getHours()
+  const greeting = session
+    ? locale === 'vi'
+      ? `${hour < 12 ? 'Chào buổi sáng' : hour < 18 ? 'Chào buổi chiều' : 'Chào buổi tối'}, ${session.user.name}.`
+      : `${hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'}, ${session.user.name}.`
+    : ''
+  const todayLabel = new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+  }).format(new Date())
+  const userInitial = session?.user.name.trim().charAt(0).toUpperCase() || '?'
+
+  if (authChecking) {
+    return (
+      <main className="startup-screen" aria-live="polite">
+        <div className="brand" aria-label="PrioriLearn">
+          <span className="brand-mark"><Focus size={19} strokeWidth={2.6} /></span>
+          <span>priori<span>learn</span></span>
+        </div>
+        <LoaderCircle className="startup-spinner" size={23} />
+        <span>{locale === 'vi' ? 'Đang mở workspace...' : 'Opening your workspace...'}</span>
+      </main>
+    )
+  }
+
+  if (!session) {
+    return (
+      <AuthScreen
+        locale={locale}
+        notice={authNotice}
+        onLocaleChange={setLocale}
+        onAuthenticated={handleAuthenticated}
+      />
+    )
+  }
+
   const navigation: { id: View; icon: typeof LayoutDashboard; label: string }[] = [
     { id: 'today', icon: LayoutDashboard, label: t.today },
     { id: 'plan', icon: ListChecks, label: t.plan },
@@ -360,20 +473,38 @@ function App() {
             <ShieldCheck size={16} />
             <span>{locale === 'vi' ? 'Bạn kiểm soát dữ liệu của mình.' : 'You control your data.'}</span>
           </div>
-          <button className="user-chip" type="button" title="Account settings">
-            <span className="avatar">M</span>
-            <span className="user-copy"><strong>Mai Nguyen</strong><small>Student</small></span>
-            <ChevronDown size={16} />
-          </button>
+          <div className="account-menu-wrap" ref={accountMenuRef}>
+            <button
+              className="user-chip"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={accountMenuOpen}
+              onClick={() => setAccountMenuOpen((open) => !open)}
+            >
+              <span className="avatar">{userInitial}</span>
+              <span className="user-copy"><strong>{session.user.name}</strong><small>{session.user.role === 'student' ? 'Student' : session.user.role}</small></span>
+              <ChevronDown size={16} />
+            </button>
+            {accountMenuOpen && (
+              <div className="account-menu" role="menu">
+                <span>{session.user.email}</span>
+                <button type="button" role="menuitem" onClick={() => void logout()}>
+                  <LogOut size={16} />
+                  {locale === 'vi' ? 'Đăng xuất' : 'Sign out'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div className="crumb"><span>Tue, Jun 16</span><span className="dot" /> <span>{planApproved ? t.approved : t.schedule}</span></div>
+          <div className="crumb"><span>{todayLabel}</span><span className="dot" /> <span>{planApproved ? t.approved : t.schedule}</span></div>
           <div className="top-actions">
             <button className="icon-button" type="button" title="Open extension preview" onClick={() => setExtensionOpen(true)}><PanelTop size={18} /></button>
             <button className="icon-button notification" type="button" title="Notifications"><Bell size={18} /><i /></button>
+            <button className="icon-button mobile-account-button" type="button" title={locale === 'vi' ? 'Đăng xuất' : 'Sign out'} aria-label={locale === 'vi' ? 'Đăng xuất' : 'Sign out'} onClick={() => void logout()}><LogOut size={18} /></button>
             <div className="language-switch" aria-label="Language">
               <button className={locale === 'vi' ? 'selected' : ''} onClick={() => setLocale('vi')} type="button">VI</button>
               <button className={locale === 'en' ? 'selected' : ''} onClick={() => setLocale('en')} type="button">EN</button>
@@ -388,7 +519,7 @@ function App() {
                 <div className="page-heading">
                   <div>
                     <p className="eyebrow"><span className="status-dot" /> {locale === 'vi' ? 'Kế hoạch thích nghi đang hoạt động' : 'Adaptive plan is active'}</p>
-                    <h1>{t.morning}</h1>
+                    <h1>{greeting}</h1>
                     <p className="subhead">{t.ready}</p>
                   </div>
                   <button className="secondary-button" type="button" onClick={() => setActiveView('imports')}><Plus size={17} /> {t.import}</button>

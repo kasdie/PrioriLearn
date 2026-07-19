@@ -52,6 +52,28 @@ export type ApiDashboard = {
   } | null
 }
 
+export type ApiUser = {
+  id: string
+  tenantId: string
+  email: string
+  name: string
+  locale: 'vi' | 'en'
+  role: 'student' | 'support' | 'admin'
+  createdAt: string
+}
+
+export type ApiTenant = {
+  id: string
+  kind: 'personal' | 'organization'
+  name: string
+  createdAt: string
+}
+
+export type ApiSession = {
+  user: ApiUser
+  tenant: ApiTenant
+}
+
 export type DocumentExtraction = {
   courses: Array<{ code: string; name: string }>
   tasks: Array<{ title: string }>
@@ -72,7 +94,6 @@ export class ApiClientError extends Error {
 }
 
 let sessionToken: string | undefined
-let sessionPromise: Promise<string> | undefined
 const apiOrigin = (import.meta.env.VITE_API_ORIGIN ?? '').trim().replace(/\/+$/, '')
 
 function apiUrl(path: string): string {
@@ -96,6 +117,20 @@ function persistSession(token: string): void {
   }
 }
 
+function clearSession(): void {
+  sessionToken = undefined
+  try {
+    window.localStorage.removeItem('priorilearn.session')
+  } catch {
+    // A denied storage policy does not prevent the in-memory session from ending.
+  }
+}
+
+function currentSessionToken(): string | undefined {
+  sessionToken ??= readStoredSession()
+  return sessionToken
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.ok) {
     if (response.status === 204) return undefined as T
@@ -109,35 +144,68 @@ async function parseResponse<T>(response: Response): Promise<T> {
   )
 }
 
-async function ensureSession(): Promise<string> {
-  if (sessionToken) return sessionToken
-  sessionToken = readStoredSession()
-  if (sessionToken) return sessionToken
-  sessionPromise ??= fetch(apiUrl('/auth/demo'), { method: 'POST' })
-    .then((response) => parseResponse<{ token: string }>(response))
-    .then(({ token }) => {
-      persistSession(token)
-      return token
-    })
-    .catch((error) => {
-      sessionPromise = undefined
-      throw error
-    })
-  return sessionPromise
+async function createSession(path: string, input?: unknown): Promise<ApiSession> {
+  const headers = new Headers()
+  if (input !== undefined) headers.set('Content-Type', 'application/json')
+  const response = await fetch(apiUrl(path), {
+    method: 'POST',
+    headers,
+    body: input === undefined ? undefined : JSON.stringify(input),
+  })
+  const auth = await parseResponse<ApiSession & { token: string }>(response)
+  persistSession(auth.token)
+  return { user: auth.user, tenant: auth.tenant }
 }
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await ensureSession()
+  const token = currentSessionToken()
+  if (!token) throw new ApiClientError(401, 'UNAUTHENTICATED', 'Sign in to continue.')
   const headers = new Headers(init.headers)
   headers.set('Authorization', `Bearer ${token}`)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-  return parseResponse<T>(await fetch(apiUrl(path), { ...init, headers }))
+  try {
+    return await parseResponse<T>(await fetch(apiUrl(path), { ...init, headers }))
+  } catch (error) {
+    if (error instanceof ApiClientError && error.status === 401) {
+      clearSession()
+      window.dispatchEvent(new Event('priorilearn:session-expired'))
+    }
+    throw error
+  }
 }
 
 export const prioriApi = {
-  async bootstrap(): Promise<void> {
+  async bootstrap(): Promise<ApiSession | null> {
     await parseResponse(await fetch(apiUrl('/health')))
-    await ensureSession()
+    if (!currentSessionToken()) return null
+    try {
+      return await apiFetch<ApiSession>('/me')
+    } catch (error) {
+      if (error instanceof ApiClientError && error.status === 401) return null
+      throw error
+    }
+  },
+
+  register(input: { email: string; password: string; name: string; locale: 'vi' | 'en' }): Promise<ApiSession> {
+    return createSession('/auth/register', input)
+  },
+
+  login(input: { email: string; password: string }): Promise<ApiSession> {
+    return createSession('/auth/login', input)
+  },
+
+  enterDemo(): Promise<ApiSession> {
+    return createSession('/auth/demo')
+  },
+
+  async logout(): Promise<void> {
+    try {
+      if (currentSessionToken()) await apiFetch('/auth/logout', { method: 'POST' })
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.status !== 401) throw error
+    } finally {
+      clearSession()
+    }
   },
 
   async dashboard(): Promise<ApiDashboard> {
@@ -222,7 +290,7 @@ export const prioriApi = {
     return apiFetch('/connectors/canvas/start', { method: 'POST', body: '{}' })
   },
 
-  track(name: 'plan_approved' | 'focus_started' | 'replan_approved'): Promise<unknown> {
+  track(name: 'onboarding_completed' | 'plan_generated' | 'plan_approved' | 'focus_started' | 'focus_completed' | 'replan_approved' | 'top_task_completed'): Promise<unknown> {
     return apiFetch('/events', { method: 'POST', body: JSON.stringify({ name, properties: {} }) })
   },
 }

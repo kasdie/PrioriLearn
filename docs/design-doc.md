@@ -6,15 +6,16 @@ The repository now contains a working React/TypeScript client and Node/TypeScrip
 
 Implemented boundaries:
 
-- Opaque bearer sessions with scrypt password hashing and personal-tenant isolation.
-- Local object-store adapter, 10 MB upload limit, 30-day expiry, purge service, document deletion, and account deletion.
+- Explicit registration/login/demo UI, opaque revocable bearer sessions, scrypt password hashing, auth rate limits, and personal-tenant isolation.
+- PostgreSQL production repository with tenant-scoped queries and a memory adapter for local/test use.
+- Supabase private object storage plus a local adapter, 10 MB upload limit, 30-day expiry, purge service, document deletion, and account deletion.
 - Review-gated document extraction and ICS import. Extracted data cannot enter planning before confirmation.
 - Deterministic priority scoring and Cost of Delay with evidence, assumptions, and uncertainty.
 - Conflict-aware scheduling, coach-mode limits, immutable plan versions, approval receipts, check-ins, and replan proposals.
 - Consent audit and product-event APIs, Canvas/Google configuration fallbacks, and no institution-facing V1 routes.
-- PostgreSQL migration with tenant foreign keys, RLS policies, encrypted-token columns, and cohort threshold constraints.
+- PostgreSQL migrations with tenant foreign keys, RLS policies, encrypted-token columns, and cohort threshold constraints.
 
-The current zero-setup runtime uses `InMemoryRepository`. A transactional PostgreSQL repository, OAuth callbacks, token encryption implementation, background queues, and email delivery remain deployment work; the API does not claim these are active.
+The zero-setup development runtime can use `InMemoryRepository`; production uses `PostgresRepository` and Supabase Storage. HttpOnly cookie sessions, email verification/password reset, OAuth callbacks, token encryption implementation, background queues, and email delivery remain deployment work; the API does not claim these are active.
 
 ## Architecture
 
@@ -58,7 +59,8 @@ All protected routes require `Authorization: Bearer <token>` and resolve the ten
 
 | Endpoint | Contract |
 | --- | --- |
-| `POST /api/auth/register`, `/login`, `/demo` | Create a personal tenant/session or enter seeded demo mode |
+| `POST /api/auth/register`, `/login`, `/demo` | Create a personal tenant/session or explicitly enter seeded demo mode; repeated attempts are rate limited |
+| `GET /api/me`, `POST /api/auth/logout` | Restore the current account context or revoke the current session immediately |
 | `GET /api/dashboard` | Return confirmed tasks ranked with factorized assessments |
 | `GET/POST/PATCH /api/tasks` | Read and manage tenant-owned confirmed tasks |
 | `POST /api/documents` | Store one PDF/text file with a 30-day raw expiry |
@@ -107,8 +109,9 @@ Each factor is normalized to 0-100. The scheduler consumes only confirmed tasks,
 
 ## Deployment path
 
-1. Implement and integration-test the async PostgreSQL repository with transaction-scoped tenant context.
-2. Replace local object storage with S3-compatible storage and lifecycle deletion while preserving the adapter contract.
-3. Complete Google/Canvas callbacks, encrypted token rotation, revocation, and sync jobs.
-4. Add a queue/outbox for extraction, purge, notifications, and daily email digests.
-5. Add observability, rate limits, CSRF-safe cookie sessions for the web surface, backup/restore tests, and a deletion SLA.
+1. Done: async PostgreSQL repository, production migrations, and tenant-scoped queries. A disposable-database CI suite remains.
+2. Done: Supabase private object storage behind the object-store contract. Durable delete retries remain.
+3. Next: field-level extraction editing, manual course editing, email verification/password reset, and CSRF-safe cookie sessions.
+4. Complete Google/Canvas callbacks, encrypted token rotation, revocation, and sync jobs.
+5. Add a queue/outbox for extraction, purge, notifications, and daily email digests.
+6. Add structured observability, backup/restore tests, and a documented deletion SLA.

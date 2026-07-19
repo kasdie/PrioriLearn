@@ -252,6 +252,14 @@ export class PostgresRepository implements Repository {
     }
   }
 
+  async revokeSession(token: string): Promise<boolean> {
+    const result = await this.pool.query(
+      'UPDATE auth_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL',
+      [hashSessionToken(token)],
+    )
+    return (result.rowCount ?? 0) > 0
+  }
+
   async createCourse(tenantId: string, input: Pick<Course, 'code' | 'name' | 'currentScore' | 'targetScore'> & { sourceDocumentId?: string }): Promise<Course> {
     const existing = await this.oneOrUndefined('SELECT * FROM courses WHERE tenant_id = $1 AND lower(code) = lower($2)', [tenantId, input.code])
     if (existing) return rowCourse(existing)
