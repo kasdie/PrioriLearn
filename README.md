@@ -68,7 +68,7 @@ The production topology is deliberately split: Vercel hosts the React client, Re
 1. In Supabase Storage, create the private bucket named in `SUPABASE_STORAGE_BUCKET` (the default is `priorilearn-documents`). Do not make it public.
 2. In Render, create a new **Blueprint** from this repository. It reads [`render.yaml`](render.yaml) and starts the compiled API with `npm start`. Render Free does not run a pre-deploy command, so run the idempotent migration manually before the first deployment.
 3. When Render asks for values, add `DATABASE_URL`, `SUPABASE_URL` (the Project URL root, not `/rest/v1`), `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`, and set `APP_ORIGIN` to the exact Vercel Production URL. `OPENAI_API_KEY` is optional; without it, the deterministic demo extractor remains active.
-4. After the Render service is live, copy its `https://...onrender.com` URL. In Vercel, set `VITE_API_ORIGIN` to that URL, with no trailing slash and no `/api` suffix, then redeploy the frontend.
+4. The committed `.env.production` supplies the public Render API origin for this deployment. In Vercel, `VITE_API_ORIGIN` may override it when the API host changes; use the URL with no trailing slash and no `/api` suffix, then redeploy the frontend.
 5. Open `https://<render-service>.onrender.com/api/health`. A production configuration reports `persistence: "postgres"` and `storage: "supabase"`.
 
 For a manual migration outside Render, run `npm.cmd run db:migrate` from a machine that has the production `DATABASE_URL`. For the compiled production command, use `npm.cmd run db:migrate:production` after `npm.cmd run build`.
