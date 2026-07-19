@@ -73,6 +73,11 @@ export class ApiClientError extends Error {
 
 let sessionToken: string | undefined
 let sessionPromise: Promise<string> | undefined
+const apiOrigin = (import.meta.env.VITE_API_ORIGIN ?? '').trim().replace(/\/+$/, '')
+
+function apiUrl(path: string): string {
+  return `${apiOrigin}/api${path}`
+}
 
 function readStoredSession(): string | undefined {
   try {
@@ -108,7 +113,7 @@ async function ensureSession(): Promise<string> {
   if (sessionToken) return sessionToken
   sessionToken = readStoredSession()
   if (sessionToken) return sessionToken
-  sessionPromise ??= fetch('/api/auth/demo', { method: 'POST' })
+  sessionPromise ??= fetch(apiUrl('/auth/demo'), { method: 'POST' })
     .then((response) => parseResponse<{ token: string }>(response))
     .then(({ token }) => {
       persistSession(token)
@@ -126,12 +131,12 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Authorization', `Bearer ${token}`)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-  return parseResponse<T>(await fetch(`/api${path}`, { ...init, headers }))
+  return parseResponse<T>(await fetch(apiUrl(path), { ...init, headers }))
 }
 
 export const prioriApi = {
   async bootstrap(): Promise<void> {
-    await parseResponse(await fetch('/api/health'))
+    await parseResponse(await fetch(apiUrl('/health')))
     await ensureSession()
   },
 

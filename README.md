@@ -61,6 +61,18 @@ npm.cmd run db:migrate
 
 `DATABASE_URL` and the remaining optional integration variables are documented in `.env` and `.env.example`. The Google Calendar and Canvas OAuth callback/token-sync flows are still pending; their variables remain blank until those connectors are enabled.
 
+## Deploy: Vercel, Render, Supabase
+
+The production topology is deliberately split: Vercel hosts the React client, Render hosts the Express API, and Supabase hosts PostgreSQL plus private source documents. The browser never receives `DATABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY`.
+
+1. In Supabase Storage, create the private bucket named in `SUPABASE_STORAGE_BUCKET` (the default is `priorilearn-documents`). Do not make it public.
+2. In Render, create a new **Blueprint** from this repository. It reads [`render.yaml`](render.yaml), runs the idempotent database migration before each deployment, and starts the compiled API with `npm start`.
+3. When Render asks for values, add `DATABASE_URL`, `SUPABASE_URL` (the Project URL root, not `/rest/v1`), `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`, and set `APP_ORIGIN` to the exact Vercel Production URL. `OPENAI_API_KEY` is optional; without it, the deterministic demo extractor remains active.
+4. After the Render service is live, copy its `https://...onrender.com` URL. In Vercel, set `VITE_API_ORIGIN` to that URL, with no trailing slash and no `/api` suffix, then redeploy the frontend.
+5. Open `https://<render-service>.onrender.com/api/health`. A production configuration reports `persistence: "postgres"` and `storage: "supabase"`.
+
+For a manual migration outside Render, run `npm.cmd run db:migrate` from a machine that has the production `DATABASE_URL`. For the compiled production command, use `npm.cmd run db:migrate:production` after `npm.cmd run build`.
+
 ## Chrome extension
 
 Load `extension/` through `chrome://extensions` using **Load unpacked**. It requests `activeTab` and `scripting`, reads a Canvas title/heading only after the student opens the popup, and never writes to Canvas.

@@ -13,6 +13,9 @@ export type AppConfig = {
   persistenceDriver: 'memory' | 'postgres'
   databaseUrl?: string
   storageDirectory: string
+  supabaseUrl?: string
+  supabaseServiceRoleKey?: string
+  supabaseStorageBucket?: string
   openAiApiKey?: string
   openAiModel: string
   maintenanceSecret?: string
@@ -30,6 +33,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     persistenceDriver,
     databaseUrl: process.env.DATABASE_URL || undefined,
     storageDirectory: path.resolve(workspaceRoot, process.env.STORAGE_DIR ?? 'var/uploads'),
+    supabaseUrl: process.env.SUPABASE_URL || undefined,
+    supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || undefined,
+    supabaseStorageBucket: process.env.SUPABASE_STORAGE_BUCKET || undefined,
     openAiApiKey: process.env.OPENAI_API_KEY || undefined,
     openAiModel: process.env.OPENAI_MODEL ?? 'gpt-5.6',
     maintenanceSecret: process.env.MAINTENANCE_SECRET || undefined,

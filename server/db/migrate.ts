@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises'
+import { access, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import dotenv from 'dotenv'
@@ -9,7 +9,15 @@ dotenv.config()
 const databaseUrl = process.env.DATABASE_URL
 if (!databaseUrl) throw new Error('DATABASE_URL is required to run migrations.')
 
-const migrationsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations')
+const compiledMigrationsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations')
+const sourceMigrationsDirectory = path.resolve(process.cwd(), 'server', 'db', 'migrations')
+let migrationsDirectory = compiledMigrationsDirectory
+try {
+  await access(compiledMigrationsDirectory)
+} catch {
+  // TypeScript emits JavaScript only, so production builds read the tracked SQL source files.
+  migrationsDirectory = sourceMigrationsDirectory
+}
 const client = new pg.Client({ connectionString: databaseUrl })
 
 await client.connect()

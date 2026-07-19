@@ -1,0 +1,32 @@
+services:
+  - type: web
+    runtime: node
+    name: priorilearn-api
+    region: singapore
+    plan: free
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npm run db:migrate:production
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: PERSISTENCE_DRIVER
+        value: postgres
+      - key: OPENAI_MODEL
+        value: gpt-5.6
+      - key: APP_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: MAINTENANCE_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false

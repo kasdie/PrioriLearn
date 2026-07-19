@@ -29,7 +29,7 @@ import { parseIcsPreview } from './services/ics.js'
 import { assessPriority } from './services/priority.js'
 import { purgeExpiredDocuments } from './services/purge.js'
 import { schedulePlan } from './services/scheduler.js'
-import { LocalObjectStore, type ObjectStore } from './storage.js'
+import { LocalObjectStore, SupabaseObjectStore, type ObjectStore } from './storage.js'
 
 type AuthContext = AuthSession
 
@@ -103,7 +103,18 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const repository = options.repository
     ?? (config.persistenceDriver === 'postgres' ? new PostgresRepository(config.databaseUrl as string) : new InMemoryRepository())
   if (config.persistenceDriver === 'memory' || options.repository instanceof InMemoryRepository) await repository.seedDemo()
-  const objectStore = options.objectStore ?? new LocalObjectStore(config.storageDirectory)
+  const supabaseStorageValues = [config.supabaseUrl, config.supabaseServiceRoleKey, config.supabaseStorageBucket]
+  const supabaseStorageConfigured = supabaseStorageValues.every(Boolean)
+  if (supabaseStorageValues.some(Boolean) && !supabaseStorageConfigured) {
+    throw new Error('SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_STORAGE_BUCKET must be set together.')
+  }
+  const objectStore = options.objectStore ?? (supabaseStorageConfigured
+    ? new SupabaseObjectStore({
+      url: config.supabaseUrl as string,
+      serviceRoleKey: config.supabaseServiceRoleKey as string,
+      bucket: config.supabaseStorageBucket as string,
+    })
+    : new LocalObjectStore(config.storageDirectory))
   const aiProvider = options.aiProvider ?? createAiProvider(config)
   const app = express()
 
@@ -140,6 +151,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       status: 'ok',
       service: 'priorilearn-api',
       persistence: config.persistenceDriver,
+      storage: supabaseStorageConfigured ? 'supabase' : 'local',
       aiProvider: aiProvider.name,
       timestamp: new Date().toISOString(),
     })
