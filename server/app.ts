@@ -510,6 +510,17 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ user: publicUser(user), tenant: await repository.getTenant(user.tenantId) })
   }))
 
+  app.get('/api/auth/session', asyncRoute(async (request, response) => {
+    const token = readCookie(request, config.sessionCookieName)
+    const auth = token ? await repository.resolveSession(token) : undefined
+    if (!auth) {
+      clearSessionCookie(response, config)
+      response.json({ session: null })
+      return
+    }
+    response.json({ session: { user: publicUser(auth.user), tenant: auth.tenant } })
+  }))
+
   app.get('/api/me', requireAuth, (_request, response) => {
     const { user, tenant } = getAuth(response)
     response.json({ user: publicUser(user), tenant })

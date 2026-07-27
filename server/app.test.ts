@@ -194,6 +194,8 @@ describe('PrioriLearn API', () => {
   })
 
   it('creates a private account and revokes its session on logout', async () => {
+    await request(context.app).get('/api/auth/session').expect(200, { session: null })
+
     const registration = await request(context.app)
       .post('/api/auth/register')
       .send({ email: 'student@example.com', password: 'strong-password', name: 'New Student', locale: 'en' })
@@ -211,7 +213,12 @@ describe('PrioriLearn API', () => {
     expect(dashboard.body.rankedTasks).toEqual([])
 
     await request(context.app).get('/api/me').set(privateAuth).expect(200)
+    const restoredSession = await request(context.app).get('/api/auth/session').set(privateAuth).expect(200)
+    expect(restoredSession.body.session).toMatchObject({
+      user: { email: 'student@example.com' },
+    })
     await request(context.app).post('/api/auth/logout').set(privateAuth).expect(204)
+    await request(context.app).get('/api/auth/session').expect(200, { session: null })
     await request(context.app).get('/api/me').set(privateAuth).expect(401)
 
     const login = await request(context.app)

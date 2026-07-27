@@ -138,6 +138,9 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const googleButtonRef = useRef<HTMLDivElement>(null)
+  const googleInitializedRef = useRef(false)
+  const googleCredentialHandlerRef = useRef<(credential: string) => void>(() => undefined)
+  const googleSignInInFlightRef = useRef(false)
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
   const t = authCopy[locale]
 
@@ -190,7 +193,8 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
   }
 
   const signInWithGoogle = useCallback(async (credential: string) => {
-    if (busy) return
+    if (googleSignInInFlightRef.current) return
+    googleSignInInFlightRef.current = true
     setBusy(true)
     setError(null)
     try {
@@ -198,9 +202,16 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
     } catch (signInError) {
       setError(readableAuthError(signInError, locale))
     } finally {
+      googleSignInInFlightRef.current = false
       setBusy(false)
     }
-  }, [busy, locale, onAuthenticated])
+  }, [locale, onAuthenticated])
+
+  useEffect(() => {
+    googleCredentialHandlerRef.current = (credential) => {
+      void signInWithGoogle(credential)
+    }
+  }, [signInWithGoogle])
 
   useEffect(() => {
     if (!googleClientId || !googleButtonRef.current) return
@@ -210,11 +221,14 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
     void loadGoogleIdentity()
       .then((google) => {
         if (!active) return
-        google.accounts.id.initialize({
-          client_id: googleClientId,
-          callback: ({ credential }) => void signInWithGoogle(credential),
-          context: mode === 'login' ? 'signin' : 'signup',
-        })
+        if (!googleInitializedRef.current) {
+          google.accounts.id.initialize({
+            client_id: googleClientId,
+            callback: ({ credential }) => googleCredentialHandlerRef.current(credential),
+            context: 'signin',
+          })
+          googleInitializedRef.current = true
+        }
         google.accounts.id.renderButton(button, {
           theme: 'outline',
           size: 'large',

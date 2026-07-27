@@ -231,12 +231,8 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const prioriApi = {
   async bootstrap(): Promise<ApiSession | null> {
     await parseResponse(await fetch(apiUrl('/health'), { credentials: 'include' }))
-    try {
-      return await apiFetch<ApiSession>('/me')
-    } catch (error) {
-      if (error instanceof ApiClientError && error.status === 401) return null
-      throw error
-    }
+    const { session } = await apiFetch<{ session: ApiSession | null }>('/auth/session')
+    return session
   },
 
   register(input: { email: string; password: string; name: string; locale: 'vi' | 'en' }): Promise<ApiSession> {

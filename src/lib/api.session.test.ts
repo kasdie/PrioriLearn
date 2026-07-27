@@ -37,10 +37,10 @@ describe('browser session transport', () => {
   it('restores through the HttpOnly cookie instead of a local token gate', async () => {
     const fetchMock = vi.spyOn(window, 'fetch')
       .mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
-      .mockResolvedValueOnce(jsonResponse(sessionPayload))
+      .mockResolvedValueOnce(jsonResponse({ session: sessionPayload }))
 
     await expect(prioriApi.bootstrap()).resolves.toEqual(sessionPayload)
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/health', '/api/me'])
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/health', '/api/auth/session'])
     expect(fetchMock.mock.calls.every(([, init]) => init?.credentials === 'include')).toBe(true)
   })
 
