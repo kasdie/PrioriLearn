@@ -12,6 +12,10 @@ export type AppConfig = {
   appOrigin: string
   authRateLimitMax: number
   authRateLimitWindowMs: number
+  sessionCookieName: string
+  sessionCookieSecure: boolean
+  enforceOriginCheck: boolean
+  structuredLogging: boolean
   persistenceDriver: 'memory' | 'postgres'
   databaseUrl?: string
   storageDirectory: string
@@ -21,21 +25,43 @@ export type AppConfig = {
   openAiApiKey?: string
   openAiModel: string
   maintenanceSecret?: string
-  canvasClientId?: string
-  canvasBaseUrl?: string
+  maintenancePreviousSecret?: string
   googleClientId?: string
+  resendApiKey?: string
+  emailFrom?: string
+  sentryDsn?: string
+  sentryEnvironment: string
+  sentryRelease?: string
+  extractionWorkerIntervalMs: number
+  extractionWorkerBatchSize: number
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const persistenceDriver = process.env.PERSISTENCE_DRIVER === 'postgres' ? 'postgres' : 'memory'
   const authRateLimitMax = Number(process.env.AUTH_RATE_LIMIT_MAX ?? 10)
   const authRateLimitWindowMs = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 15 * 60_000)
+  const appOrigin = process.env.APP_ORIGIN ?? 'http://127.0.0.1:4173'
+  const sessionCookieSecure = process.env.SESSION_COOKIE_SECURE
+    ? process.env.SESSION_COOKIE_SECURE === 'true'
+    : appOrigin.startsWith('https://')
+  const enforceOriginCheck = process.env.ENFORCE_ORIGIN_CHECK
+    ? process.env.ENFORCE_ORIGIN_CHECK === 'true'
+    : process.env.NODE_ENV === 'production'
+  const structuredLogging = process.env.STRUCTURED_LOGS
+    ? process.env.STRUCTURED_LOGS === 'true'
+    : process.env.NODE_ENV === 'production'
+  const extractionWorkerIntervalMs = Number(process.env.EXTRACTION_WORKER_INTERVAL_MS ?? 3_000)
+  const extractionWorkerBatchSize = Number(process.env.EXTRACTION_WORKER_BATCH_SIZE ?? 2)
 
   return {
     port: Number(process.env.PORT ?? 8787),
-    appOrigin: process.env.APP_ORIGIN ?? 'http://127.0.0.1:4173',
+    appOrigin,
     authRateLimitMax: Number.isInteger(authRateLimitMax) && authRateLimitMax > 0 ? authRateLimitMax : 10,
     authRateLimitWindowMs: Number.isInteger(authRateLimitWindowMs) && authRateLimitWindowMs > 0 ? authRateLimitWindowMs : 15 * 60_000,
+    sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'priorilearn_session',
+    sessionCookieSecure,
+    enforceOriginCheck,
+    structuredLogging,
     persistenceDriver,
     databaseUrl: process.env.DATABASE_URL || undefined,
     storageDirectory: path.resolve(workspaceRoot, process.env.STORAGE_DIR ?? 'var/uploads'),
@@ -45,9 +71,19 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     openAiApiKey: process.env.OPENAI_API_KEY || undefined,
     openAiModel: process.env.OPENAI_MODEL ?? 'gpt-5.6',
     maintenanceSecret: process.env.MAINTENANCE_SECRET || undefined,
-    canvasClientId: process.env.CANVAS_CLIENT_ID || undefined,
-    canvasBaseUrl: process.env.CANVAS_BASE_URL || undefined,
+    maintenancePreviousSecret: process.env.MAINTENANCE_SECRET_PREVIOUS || undefined,
     googleClientId: process.env.GOOGLE_CLIENT_ID || undefined,
+    resendApiKey: process.env.RESEND_API_KEY || undefined,
+    emailFrom: process.env.EMAIL_FROM || undefined,
+    sentryDsn: process.env.SENTRY_DSN || undefined,
+    sentryEnvironment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
+    sentryRelease: process.env.SENTRY_RELEASE || process.env.RENDER_GIT_COMMIT || undefined,
+    extractionWorkerIntervalMs: Number.isInteger(extractionWorkerIntervalMs) && extractionWorkerIntervalMs >= 1_000
+      ? extractionWorkerIntervalMs
+      : 3_000,
+    extractionWorkerBatchSize: Number.isInteger(extractionWorkerBatchSize) && extractionWorkerBatchSize > 0
+      ? Math.min(extractionWorkerBatchSize, 10)
+      : 2,
     ...overrides,
   }
 }

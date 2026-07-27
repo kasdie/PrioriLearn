@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/:path((?!cron/daily).*)",
+      "destination": "https://priorilearn-api.onrender.com/api/:path"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/daily",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}

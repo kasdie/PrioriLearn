@@ -22,7 +22,7 @@ The architecture supports personal tenants today and a privacy-safe institution 
 
 Codex was used to turn the product concept into the working React/TypeScript experience, Node API, multi-tenant contracts, deterministic score/scheduler, OpenAI provider boundary, PostgreSQL migration, tests, extension package, sample data, and product/design/submission documentation.
 
-GPT-5.6 is integrated through the OpenAI Responses API for source-grounded document extraction and structured coaching proposals. Zod schemas constrain output. The model never approves or mutates a plan; API version checks and explicit user actions control those transitions. A deterministic provider preserves the full demo when credentials are unavailable and makes that state visible through `/api/health`.
+GPT-5.6 is integrated through the OpenAI Responses API for source-grounded PDF, image, and text extraction plus structured coaching proposals. PNG/JPEG screenshots use private image inputs; Zod schemas constrain output. The model never approves or mutates a plan; API version checks and explicit user actions control those transitions. A deterministic provider preserves the full demo when credentials are unavailable and makes that state visible through `/api/health`.
 
 ## Three-minute video path
 

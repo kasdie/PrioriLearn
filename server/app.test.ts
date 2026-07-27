@@ -1,28 +1,196 @@
 import request from 'supertest'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApplication, type ApplicationContext } from './app.js'
 import { MockAiProvider } from './services/ai-provider.js'
+import { MemoryEmailSender } from './services/email.js'
+import { MemoryErrorReporter } from './services/error-reporter.js'
+import { InvalidGoogleIdentityError } from './services/google-auth.js'
+import { processLifecycleJobs } from './services/purge.js'
 import { MemoryObjectStore } from './storage.js'
 
 describe('PrioriLearn API', () => {
   let context: ApplicationContext
-  let token: string
+  let cookie: string
+  let errorReporter: MemoryErrorReporter
+
+  const sessionCookie = (response: request.Response): string => {
+    const header = response.headers['set-cookie']
+    const value = Array.isArray(header) ? header[0] : header
+    if (!value) throw new Error('Expected a session cookie.')
+    return value.split(';')[0] ?? ''
+  }
 
   beforeEach(async () => {
+    errorReporter = new MemoryErrorReporter()
     context = await createApplication({
       config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
       objectStore: new MemoryObjectStore(),
       aiProvider: new MockAiProvider(),
+      errorReporter,
     })
     const demo = await request(context.app).post('/api/auth/demo').expect(200)
-    token = demo.body.token as string
+    cookie = sessionCookie(demo)
   })
 
-  const authorized = () => ({ Authorization: `Bearer ${token}` })
+  const authorized = () => ({ Cookie: cookie })
 
   it('reports its runtime boundaries', async () => {
-    const response = await request(context.app).get('/api/health').expect(200)
-    expect(response.body).toMatchObject({ status: 'ok', persistence: 'memory', aiProvider: 'deterministic-demo' })
+    const response = await request(context.app)
+      .get('/api/health')
+      .set('X-Request-Id', 'test-request-123')
+      .expect(200)
+    expect(response.body).toMatchObject({
+      status: 'ok',
+      persistence: 'memory',
+      aiProvider: 'deterministic-demo',
+      errorReporter: 'memory',
+      errorReportingConfigured: true,
+    })
+    expect(response.headers['x-request-id']).toBe('test-request-123')
+  })
+
+  it('reports unexpected API failures with only safe correlation metadata', async () => {
+    vi.spyOn(context.repository, 'listCourses').mockRejectedValueOnce(new Error('Database request failed'))
+
+    const response = await request(context.app)
+      .get('/api/dashboard?token=must-not-leak')
+      .set(authorized())
+      .set('X-Request-Id', 'safe-request-123')
+      .expect(500)
+
+    expect(response.body).toEqual({
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred.' },
+    })
+    expect(errorReporter.events).toHaveLength(1)
+    expect(errorReporter.events[0]?.context).toEqual({
+      requestId: 'safe-request-123',
+      method: 'GET',
+      path: '/api/dashboard',
+      status: 500,
+      code: 'INTERNAL_ERROR',
+      source: 'api',
+    })
+    expect(JSON.stringify(errorReporter.events[0]?.context)).not.toContain('must-not-leak')
+  })
+
+  it('accepts the previous maintenance secret only during a controlled rotation', async () => {
+    const rotating = await createApplication({
+      config: {
+        maintenanceSecret: 'new-maintenance-secret',
+        maintenancePreviousSecret: 'old-maintenance-secret',
+        persistenceDriver: 'memory',
+      },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      errorReporter: new MemoryErrorReporter(),
+    })
+
+    await request(rotating.app)
+      .post('/api/internal/maintenance/daily')
+      .set('X-Maintenance-Secret', 'old-maintenance-secret')
+      .expect(200)
+    await request(rotating.app)
+      .post('/api/internal/maintenance/daily')
+      .set('X-Maintenance-Secret', 'not-valid')
+      .expect(401)
+  })
+
+  it('returns source-grounded assessment data for the workspace', async () => {
+    const response = await request(context.app).get('/api/dashboard').set(authorized()).expect(200)
+    expect(response.body.confirmedTaskCount).toBeGreaterThanOrEqual(response.body.rankedTasks.length)
+    expect(response.body.rankedTasks.length).toBeGreaterThan(0)
+    expect(response.body.recommendation).toMatchObject({
+      task: expect.objectContaining({ id: expect.any(String), title: expect.any(String) }),
+      course: expect.objectContaining({ id: expect.any(String), name: expect.any(String) }),
+      firstStep: expect.any(String),
+      estimatedMinutes: expect.any(Number),
+      assessment: expect.objectContaining({
+        score: expect.any(Number),
+        factors: expect.objectContaining({ academicImpact: expect.any(Number), costOfDelay: expect.any(Number) }),
+        evidence: expect.any(Array),
+        assumptions: expect.any(Array),
+        uncertainty: expect.stringMatching(/low|medium|high/),
+        costOfDelay: expect.objectContaining({
+          delayHours: expect.any(Number),
+          completionProbabilityNow: expect.any(Number),
+          completionProbabilityAfterDelay: expect.any(Number),
+          message: expect.any(String),
+        }),
+      }),
+    })
+  })
+
+  it('marks a tenant-owned task complete and removes it from active ranking', async () => {
+    const before = await request(context.app).get('/api/dashboard').set(authorized()).expect(200)
+    const taskId = before.body.recommendation.task.id as string
+
+    const completed = await request(context.app)
+      .patch(`/api/tasks/${taskId}`)
+      .set(authorized())
+      .send({ status: 'completed' })
+      .expect(200)
+    expect(completed.body.task).toMatchObject({ id: taskId, status: 'completed' })
+
+    const after = await request(context.app).get('/api/dashboard').set(authorized()).expect(200)
+    expect(after.body.rankedTasks).not.toContainEqual(expect.objectContaining({ task: expect.objectContaining({ id: taskId }) }))
+    const tasks = await request(context.app).get('/api/tasks').set(authorized()).expect(200)
+    expect(tasks.body.tasks).toContainEqual(expect.objectContaining({ id: taskId, status: 'completed' }))
+  })
+
+  it('exports the authenticated tenant without internal storage credentials', async () => {
+    const response = await request(context.app).get('/api/account/export').set(authorized()).expect(200)
+    expect(response.headers['content-disposition']).toContain('attachment;')
+    expect(response.body).toMatchObject({
+      format: 'priorilearn/account-export-v1',
+      user: expect.objectContaining({ email: 'mai@demo.priorilearn.app' }),
+      tenant: expect.objectContaining({ kind: 'personal' }),
+      courses: expect.any(Array),
+      tasks: expect.any(Array),
+      sourceDocuments: expect.any(Array),
+      availabilityBlocks: expect.any(Array),
+      plans: expect.any(Array),
+      consents: expect.any(Array),
+    })
+    expect(JSON.stringify(response.body)).not.toContain('storageKey')
+    expect(JSON.stringify(response.body)).not.toContain('idempotencyKey')
+  })
+
+  it('keeps learner signals tenant-private, versioned, and exportable', async () => {
+    const initial = await request(context.app).get('/api/learner-profile').set(authorized()).expect(200)
+    expect(initial.body.profile).toEqual({ version: 0, signals: [], sourceEventCount: 0 })
+
+    const saved = await request(context.app)
+      .put('/api/learner-profile')
+      .set(authorized())
+      .send({
+        expectedVersion: 0,
+        signals: [{ id: 'focus-length', kind: 'focus_duration', value: '35 minutes' }],
+      })
+      .expect(200)
+    expect(saved.body.profile).toMatchObject({
+      version: 1,
+      signals: [{ id: 'focus-length', kind: 'focus_duration', value: '35 minutes' }],
+    })
+
+    await request(context.app)
+      .put('/api/learner-profile')
+      .set(authorized())
+      .send({ expectedVersion: 0, signals: [] })
+      .expect(409)
+      .expect({ error: { code: 'LEARNER_PROFILE_VERSION_CONFLICT', message: 'The learner profile changed. Reload it before saving again.' } })
+
+    const exported = await request(context.app).get('/api/account/export').set(authorized()).expect(200)
+    expect(exported.body.learnerProfile).toMatchObject({ version: 1, signals: [{ value: '35 minutes' }] })
+
+    const registration = await request(context.app)
+      .post('/api/auth/register')
+      .send({ email: 'profile-private@example.test', password: 'strong-password', name: 'Private Student', locale: 'en' })
+      .expect(201)
+    const otherProfile = await request(context.app)
+      .get('/api/learner-profile')
+      .set({ Cookie: sessionCookie(registration) })
+      .expect(200)
+    expect(otherProfile.body.profile).toEqual({ version: 0, signals: [], sourceEventCount: 0 })
   })
 
   it('creates a private account and revokes its session on logout', async () => {
@@ -30,11 +198,14 @@ describe('PrioriLearn API', () => {
       .post('/api/auth/register')
       .send({ email: 'student@example.com', password: 'strong-password', name: 'New Student', locale: 'en' })
       .expect(201)
-    const privateToken = registration.body.token as string
-    const privateAuth = { Authorization: `Bearer ${privateToken}` }
+    const privateCookie = sessionCookie(registration)
+    const privateAuth = { Cookie: privateCookie }
 
     expect(registration.body.user).toMatchObject({ email: 'student@example.com', name: 'New Student', locale: 'en' })
     expect(registration.body.user).not.toHaveProperty('passwordHash')
+    expect(registration.body).not.toHaveProperty('token')
+    expect(registration.headers['set-cookie']?.[0]).toContain('HttpOnly')
+    expect(registration.headers['set-cookie']?.[0]).toContain('SameSite=Lax')
 
     const dashboard = await request(context.app).get('/api/dashboard').set(privateAuth).expect(200)
     expect(dashboard.body.rankedTasks).toEqual([])
@@ -47,7 +218,255 @@ describe('PrioriLearn API', () => {
       .post('/api/auth/login')
       .send({ email: 'student@example.com', password: 'strong-password' })
       .expect(200)
-    expect(login.body.token).not.toBe(privateToken)
+    expect(login.body).not.toHaveProperty('token')
+    expect(sessionCookie(login)).not.toBe(privateCookie)
+  })
+
+  it('creates, reuses, and safely links accounts through verified Google identities', async () => {
+    const google = await createApplication({
+      config: { googleClientId: 'test-google-client', maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      googleTokenVerifier: async (credential) => {
+        if (credential === 'invalid') throw new InvalidGoogleIdentityError('Invalid test credential.')
+        if (credential === 'linked') return { subject: 'google-linked', email: 'existing@example.com', name: 'Existing User', emailVerified: true }
+        return { subject: 'google-new', email: 'google@example.com', name: 'Google Student', emailVerified: true }
+      },
+    })
+
+    const first = await request(google.app)
+      .post('/api/auth/google')
+      .send({ credential: 'new', locale: 'en' })
+      .expect(200)
+    const second = await request(google.app)
+      .post('/api/auth/google')
+      .send({ credential: 'new', locale: 'en' })
+      .expect(200)
+    expect(first.body.user).toMatchObject({ email: 'google@example.com', name: 'Google Student' })
+    expect(first.body.user.id).toBe(second.body.user.id)
+    expect(first.body.user).not.toHaveProperty('googleSubject')
+    expect(sessionCookie(first)).toContain('priorilearn_session=')
+
+    const existing = await request(google.app)
+      .post('/api/auth/register')
+      .send({ email: 'existing@example.com', password: 'strong-password', name: 'Existing User', locale: 'en' })
+      .expect(201)
+    const linked = await request(google.app)
+      .post('/api/auth/google')
+      .send({ credential: 'linked', locale: 'en' })
+      .expect(200)
+    expect(linked.body.user.id).toBe(existing.body.user.id)
+    const linkedUser = await google.repository.findUserByGoogleSubject('google-linked')
+    expect(linkedUser).toMatchObject({ id: existing.body.user.id })
+    await request(google.app).post('/api/auth/google').send({ credential: 'invalid', locale: 'en' }).expect(401)
+
+    const unconfigured = await createApplication({
+      config: { googleClientId: undefined, maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+    })
+    await request(unconfigured.app).post('/api/auth/google').send({ credential: 'new', locale: 'en' }).expect(503)
+  })
+
+  it('verifies an email with a one-time expiring action token', async () => {
+    const emailSender = new MemoryEmailSender()
+    const emailContext = await createApplication({
+      config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      emailSender,
+    })
+    const registration = await request(emailContext.app)
+      .post('/api/auth/register')
+      .send({ email: 'verify@example.com', password: 'strong-password', name: 'Verify Student', locale: 'en' })
+      .expect(201)
+    const registrationCookie = sessionCookie(registration)
+    expect(registration.body.user.emailVerified).toBe(false)
+
+    await request(emailContext.app)
+      .post('/api/auth/email-verification/request')
+      .set('Cookie', registrationCookie)
+      .expect(202)
+    expect(emailSender.messages).toHaveLength(1)
+    const verificationLink = emailSender.messages[0]?.text.split('\n').find((line) => line.startsWith('http'))
+    if (!verificationLink) throw new Error('Expected a verification link in the email.')
+    const token = new URL(verificationLink).searchParams.get('token')
+    if (!token) throw new Error('Expected a verification token in the email link.')
+
+    const confirmed = await request(emailContext.app)
+      .post('/api/auth/email-verification/confirm')
+      .send({ token })
+      .expect(200)
+    expect(confirmed.body.user.emailVerified).toBe(true)
+    await request(emailContext.app)
+      .post('/api/auth/email-verification/confirm')
+      .send({ token })
+      .expect(400)
+  })
+
+  it('resets a password without disclosing accounts and revokes every old session', async () => {
+    const emailSender = new MemoryEmailSender()
+    const emailContext = await createApplication({
+      config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      emailSender,
+    })
+    const registration = await request(emailContext.app)
+      .post('/api/auth/register')
+      .send({ email: 'reset@example.com', password: 'old-password', name: 'Reset Student', locale: 'en' })
+      .expect(201)
+    const oldCookie = sessionCookie(registration)
+
+    await request(emailContext.app)
+      .post('/api/auth/password-reset/request')
+      .send({ email: 'missing@example.com' })
+      .expect(202)
+    expect(emailSender.messages).toHaveLength(0)
+
+    await request(emailContext.app)
+      .post('/api/auth/password-reset/request')
+      .send({ email: 'reset@example.com' })
+      .expect(202)
+    expect(emailSender.messages).toHaveLength(1)
+    const resetLink = emailSender.messages[0]?.text.split('\n').find((line) => line.startsWith('http'))
+    if (!resetLink) throw new Error('Expected a password reset link in the email.')
+    const token = new URL(resetLink).searchParams.get('token')
+    if (!token) throw new Error('Expected a password reset token in the email link.')
+
+    const confirmed = await request(emailContext.app)
+      .post('/api/auth/password-reset/confirm')
+      .send({ token, password: 'new-password' })
+      .expect(200)
+    expect(confirmed.body.user.emailVerified).toBe(true)
+    await request(emailContext.app).get('/api/me').set('Cookie', oldCookie).expect(401)
+    await request(emailContext.app)
+      .post('/api/auth/password-reset/confirm')
+      .send({ token, password: 'another-password' })
+      .expect(400)
+    await request(emailContext.app)
+      .post('/api/auth/login')
+      .send({ email: 'reset@example.com', password: 'old-password' })
+      .expect(401)
+    await request(emailContext.app)
+      .post('/api/auth/login')
+      .send({ email: 'reset@example.com', password: 'new-password' })
+      .expect(200)
+  })
+
+  it('reports missing email delivery configuration consistently', async () => {
+    await request(context.app)
+      .post('/api/auth/password-reset/request')
+      .send({ email: 'missing@example.com' })
+      .expect(503)
+    await request(context.app)
+      .post('/api/auth/email-verification/request')
+      .set(authorized())
+      .expect(202)
+
+    const registration = await request(context.app)
+      .post('/api/auth/register')
+      .send({ email: 'unverified@example.com', password: 'strong-password', name: 'Unverified Student', locale: 'en' })
+      .expect(201)
+    await request(context.app)
+      .post('/api/auth/email-verification/request')
+      .set('Cookie', sessionCookie(registration))
+      .expect(503)
+  })
+
+  it('requires verified opt-in and sends the daily digest through maintenance', async () => {
+    const emailSender = new MemoryEmailSender()
+    const digestContext = await createApplication({
+      config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      emailSender,
+    })
+    const registration = await request(digestContext.app)
+      .post('/api/auth/register')
+      .send({ email: 'digest@example.com', password: 'strong-password', name: 'Digest Student', locale: 'en' })
+      .expect(201)
+    const digestCookie = sessionCookie(registration)
+    await request(digestContext.app)
+      .post('/api/consents')
+      .set('Cookie', digestCookie)
+      .send({ purpose: 'email_digest', granted: true, source: 'settings' })
+      .expect(409)
+
+    const userId = registration.body.user.id as string
+    const tenantId = registration.body.user.tenantId as string
+    await digestContext.repository.markEmailVerified(tenantId, userId)
+    const course = await digestContext.repository.createCourse(tenantId, {
+      code: 'DIGEST101',
+      name: 'Digest testing',
+      currentScore: 55,
+      targetScore: 80,
+    })
+    await digestContext.repository.createTask(tenantId, {
+      courseId: course.id,
+      title: 'Review the daily priority',
+      dueAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      gradeWeight: 25,
+      estimatedMinutes: 40,
+      status: 'confirmed',
+      sourceKind: 'manual',
+      confidence: 1,
+      evidence: ['API test task'],
+    })
+    await request(digestContext.app)
+      .post('/api/consents')
+      .set('Cookie', digestCookie)
+      .send({ purpose: 'email_digest', granted: true, source: 'settings' })
+      .expect(201)
+    await digestContext.repository.scheduleDailyDigest(
+      tenantId,
+      userId,
+      new Date(Date.now() - 60_000).toISOString(),
+    )
+
+    const maintenance = await request(digestContext.app)
+      .post('/api/internal/maintenance/daily')
+      .set('x-maintenance-secret', 'test-secret')
+      .expect(200)
+    expect(maintenance.body.notifications).toMatchObject({ configured: true, claimed: 1, sent: 1 })
+    expect(emailSender.messages[0]?.subject).toContain('Review the daily priority')
+
+    await request(digestContext.app)
+      .post('/api/consents')
+      .set('Cookie', digestCookie)
+      .send({ purpose: 'email_digest', granted: false, source: 'settings' })
+      .expect(201)
+  })
+
+  it('rejects untrusted writes and prevents private response caching', async () => {
+    const guarded = await createApplication({
+      config: {
+        appOrigin: 'https://app.priorilearn.test',
+        enforceOriginCheck: true,
+        maintenanceSecret: 'test-secret',
+        persistenceDriver: 'memory',
+        sessionCookieSecure: true,
+      },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+    })
+
+    await request(guarded.app).post('/api/auth/demo').expect(403)
+    const signedIn = await request(guarded.app)
+      .post('/api/auth/demo')
+      .set('Origin', 'https://app.priorilearn.test')
+      .expect(200)
+    const guardedCookie = sessionCookie(signedIn)
+    expect(signedIn.headers['set-cookie']?.[0]).toContain('Secure')
+
+    const me = await request(guarded.app).get('/api/me').set('Cookie', guardedCookie).expect(200)
+    expect(me.headers['cache-control']).toContain('no-store')
+
+    await request(guarded.app)
+      .post('/api/auth/logout')
+      .set('Cookie', guardedCookie)
+      .set('Origin', 'https://evil.example')
+      .expect(403)
   })
 
   it('rate limits repeated authentication attempts', async () => {
@@ -65,14 +484,21 @@ describe('PrioriLearn API', () => {
     const uploaded = await request(context.app)
       .post('/api/documents')
       .set(authorized())
+      .set('Idempotency-Key', 'syllabus-upload-1')
       .attach('file', Buffer.from('%PDF demo syllabus'), { filename: 'syllabus.pdf', contentType: 'application/pdf' })
       .expect(201)
     const documentId = uploaded.body.document.id as string
-    const extraction = await request(context.app)
+    const queued = await request(context.app)
       .post(`/api/documents/${documentId}/extract`)
       .set(authorized())
+      .expect(202)
+    expect(queued.body).toMatchObject({ queued: true, document: { status: 'extracting' } })
+    expect(await context.processExtractionQueue()).toMatchObject({ claimed: 1, completed: 1 })
+    const extraction = await request(context.app)
+      .get(`/api/documents/${documentId}`)
+      .set(authorized())
       .expect(200)
-    expect(extraction.body.requiresConfirmation).toBe(true)
+    expect(extraction.body.document).toMatchObject({ status: 'review', extraction: expect.any(Object) })
 
     const whileUnconfirmed = await request(context.app).get('/api/tasks').set(authorized()).expect(200)
     expect(whileUnconfirmed.body.tasks).toHaveLength(before.body.tasks.length)
@@ -84,6 +510,189 @@ describe('PrioriLearn API', () => {
       .expect(200)
     const after = await request(context.app).get('/api/tasks').set(authorized()).expect(200)
     expect(after.body.tasks).toHaveLength(before.body.tasks.length + 1)
+  })
+
+  it('accepts PNG and JPEG study images after validating their contents', async () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2l0sAAAAASUVORK5CYII=', 'base64')
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9])
+    const fixtures = [
+      { key: 'image-png-upload', filename: 'schedule.png', contentType: 'image/png', content: png, mimeType: 'image/png' },
+      { key: 'image-jpeg-upload', filename: 'assignment.jpg', contentType: 'image/jpeg', content: jpeg, mimeType: 'image/jpeg' },
+    ]
+
+    for (const fixture of fixtures) {
+      const uploaded = await request(context.app)
+        .post('/api/documents')
+        .set(authorized())
+        .set('Idempotency-Key', fixture.key)
+        .attach('file', fixture.content, { filename: fixture.filename, contentType: fixture.contentType })
+        .expect(201)
+      expect(uploaded.body.document).toMatchObject({
+        filename: fixture.filename,
+        mimeType: fixture.mimeType,
+        status: 'uploaded',
+      })
+    }
+  })
+
+  it('rejects renamed or malformed images before storing them', async () => {
+    const invalid = await request(context.app)
+      .post('/api/documents')
+      .set(authorized())
+      .set('Idempotency-Key', 'invalid-image-upload')
+      .attach('file', Buffer.from('not an image'), { filename: 'fake.png', contentType: 'image/png' })
+      .expect(415)
+    expect(invalid.body).toMatchObject({ error: { code: 'INVALID_FILE_CONTENT' } })
+
+    const pngRenamedAsJpeg = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2l0sAAAAASUVORK5CYII=', 'base64')
+    const mismatched = await request(context.app)
+      .post('/api/documents')
+      .set(authorized())
+      .set('Idempotency-Key', 'mismatched-image-upload')
+      .attach('file', pngRenamedAsJpeg, { filename: 'fake.jpg', contentType: 'application/octet-stream' })
+      .expect(415)
+    expect(mismatched.body).toMatchObject({ error: { code: 'INVALID_FILE_CONTENT' } })
+  })
+
+  it('accepts CSV and JSON school exports and prepares deterministic review drafts', async () => {
+    const fixtures = [
+      {
+        key: 'structured-csv-upload',
+        filename: 'semester.csv',
+        contentType: 'text/csv',
+        content: [
+          'course_code,course_name,task_title,due_date,grade_weight,estimated_minutes',
+          'CS401,Distributed Systems,Consensus exercise,2027-09-01T12:00:00Z,25,50',
+        ].join('\n'),
+        provider: 'structured-csv',
+        title: 'Consensus exercise',
+      },
+      {
+        key: 'structured-json-upload',
+        filename: 'semester.json',
+        contentType: 'application/json',
+        content: JSON.stringify({
+          courses: [{ id: 'MATH210', name: 'Applied Mathematics' }],
+          tasks: [{ courseId: 'MATH210', title: 'Problem set 2', estimatedMinutes: 40 }],
+        }),
+        provider: 'structured-json',
+        title: 'Problem set 2',
+      },
+    ]
+
+    for (const fixture of fixtures) {
+      const uploaded = await request(context.app)
+        .post('/api/documents')
+        .set(authorized())
+        .set('Idempotency-Key', fixture.key)
+        .attach('file', Buffer.from(fixture.content), {
+          filename: fixture.filename,
+          contentType: fixture.contentType,
+        })
+        .expect(201)
+
+      await request(context.app)
+        .post(`/api/documents/${uploaded.body.document.id}/extract`)
+        .set(authorized())
+        .expect(202)
+      expect(await context.processExtractionQueue()).toMatchObject({ claimed: 1, completed: 1 })
+      const extracted = await request(context.app)
+        .get(`/api/documents/${uploaded.body.document.id}`)
+        .set(authorized())
+        .expect(200)
+
+      expect(extracted.body).toMatchObject({
+        document: {
+          status: 'review',
+          extractionProvider: fixture.provider,
+          extraction: { tasks: [expect.objectContaining({ title: fixture.title })] },
+        },
+      })
+    }
+  })
+
+  it('rejects malformed structured files without confirming or replacing the raw upload', async () => {
+    const uploaded = await request(context.app)
+      .post('/api/documents')
+      .set(authorized())
+      .set('Idempotency-Key', 'malformed-json-upload')
+      .attach('file', Buffer.from('{broken json'), {
+        filename: 'broken.json',
+        contentType: 'application/json',
+      })
+      .expect(201)
+
+    await request(context.app)
+      .post(`/api/documents/${uploaded.body.document.id}/extract`)
+      .set(authorized())
+      .expect(202)
+    expect(await context.processExtractionQueue()).toMatchObject({ claimed: 1, failed: 1 })
+
+    const stored = await request(context.app)
+      .get(`/api/documents/${uploaded.body.document.id}`)
+      .set(authorized())
+      .expect(200)
+    expect(stored.body.document.status).toBe('extraction_failed')
+
+    await request(context.app)
+      .post('/api/documents')
+      .set(authorized())
+      .set('Idempotency-Key', 'spoofed-extension-upload')
+      .attach('file', Buffer.from('{}'), {
+        filename: 'payload.exe',
+        contentType: 'application/json',
+      })
+      .expect(415)
+  })
+
+  it('resumes an upload with one idempotency key and does not duplicate confirmed records', async () => {
+    const key = 'same-file-retry-key'
+    const first = await request(context.app)
+      .post('/api/documents')
+      .set(authorized())
+      .set('Idempotency-Key', key)
+      .attach('file', Buffer.from('course outline'), { filename: 'outline.txt', contentType: 'text/plain' })
+      .expect(201)
+    const retried = await request(context.app)
+      .post('/api/documents')
+      .set(authorized())
+      .set('Idempotency-Key', key)
+      .attach('file', Buffer.from('course outline'), { filename: 'outline.txt', contentType: 'text/plain' })
+      .expect(200)
+    expect(retried.body.document.id).toBe(first.body.document.id)
+    expect(retried.body.resumed).toBe(true)
+
+    const documentId = first.body.document.id as string
+    await request(context.app).post(`/api/documents/${documentId}/extract`).set(authorized()).expect(202)
+    expect(await context.processExtractionQueue()).toMatchObject({ claimed: 1, completed: 1 })
+    const firstConfirmation = await request(context.app)
+      .post(`/api/documents/${documentId}/confirm`).set(authorized()).send({}).expect(200)
+    const retriedConfirmation = await request(context.app)
+      .post(`/api/documents/${documentId}/confirm`).set(authorized()).send({}).expect(200)
+    expect(retriedConfirmation.body.tasks.map((task: { id: string }) => task.id))
+      .toEqual(firstConfirmation.body.tasks.map((task: { id: string }) => task.id))
+  })
+
+  it('returns source documents through a bounded cursor page', async () => {
+    for (const [key, filename] of [['source-page-one', 'one.txt'], ['source-page-two', 'two.txt']] as const) {
+      await request(context.app)
+        .post('/api/documents')
+        .set(authorized())
+        .set('Idempotency-Key', key)
+        .attach('file', Buffer.from(filename), { filename, contentType: 'text/plain' })
+        .expect(201)
+    }
+
+    const first = await request(context.app).get('/api/documents?limit=1').set(authorized()).expect(200)
+    expect(first.body.documents).toHaveLength(1)
+    expect(first.body.nextCursor).toEqual(expect.any(String))
+    const second = await request(context.app)
+      .get(`/api/documents?limit=1&cursor=${encodeURIComponent(first.body.nextCursor)}`)
+      .set(authorized())
+      .expect(200)
+    expect(second.body.documents).toHaveLength(1)
+    expect(second.body.documents[0].id).not.toBe(first.body.documents[0].id)
+    await request(context.app).get('/api/documents?cursor=bad-cursor').set(authorized()).expect(400)
   })
 
   it('does not apply a plan or replan without explicit versioned approval', async () => {
@@ -114,6 +723,12 @@ describe('PrioriLearn API', () => {
       .expect(200)
     expect(approval.body.plan.status).toBe('approved')
 
+    await request(context.app)
+      .put('/api/learner-profile')
+      .set(authorized())
+      .send({ expectedVersion: 0, signals: [{ id: 'focus-35', kind: 'focus_duration', value: '35 minutes' }] })
+      .expect(200)
+
     const checkIn = await request(context.app)
       .post('/api/check-ins')
       .set(authorized())
@@ -121,6 +736,13 @@ describe('PrioriLearn API', () => {
       .expect(201)
     const proposal = checkIn.body.proposal
     expect(proposal.status).toBe('proposed')
+    expect(proposal).toMatchObject({
+      title: expect.any(String),
+      rationale: expect.any(String),
+      changes: expect.any(Array),
+      proposedItems: expect.any(Array),
+    })
+    expect(proposal.proposedItems[0].minutes).toBe(35)
     expect(context.repository.getPlan(context.repository.getDemoUser().tenantId, proposedPlan.id)?.status).toBe('approved')
 
     await request(context.app)
@@ -135,6 +757,64 @@ describe('PrioriLearn API', () => {
       .expect(200)
     expect(replanApproval.body.plan.status).toBe('approved')
     expect(replanApproval.body.plan.version).toBeGreaterThan(proposedPlan.version)
+  })
+
+  it('keeps one active and one pending plan through generate, edit, approve, and reload', async () => {
+    const firstGeneration = await request(context.app)
+      .post('/api/plans/generate')
+      .set(authorized())
+      .send({ startsAt: '2026-07-16T09:00:00.000Z', availableMinutes: 90, coachMode: 'discipline' })
+      .expect(201)
+    const firstProposal = firstGeneration.body.plan
+
+    const repeatedGeneration = await request(context.app)
+      .post('/api/plans/generate')
+      .set(authorized())
+      .send({ startsAt: '2026-07-17T09:00:00.000Z', availableMinutes: 120, coachMode: 'focus' })
+      .expect(200)
+    expect(repeatedGeneration.body.plan.id).toBe(firstProposal.id)
+
+    const editedItems = firstProposal.items.map((item: { startsAt: string; endsAt: string; minutes: number }, index: number) => {
+      if (index !== 0) return item
+      const startsAt = new Date(new Date(item.startsAt).getTime() + 15 * 60_000).toISOString()
+      return { ...item, startsAt, endsAt: new Date(new Date(startsAt).getTime() + item.minutes * 60_000).toISOString() }
+    })
+    const edited = await request(context.app)
+      .put(`/api/plans/${firstProposal.id}/proposal`)
+      .set(authorized())
+      .send({ expectedVersion: firstProposal.version, items: editedItems })
+      .expect(201)
+    expect(edited.body.plan.version).toBe(firstProposal.version + 1)
+    expect(edited.body.plan.id).not.toBe(firstProposal.id)
+
+    const stale = await request(context.app)
+      .put(`/api/plans/${edited.body.plan.id}/proposal`)
+      .set(authorized())
+      .send({ expectedVersion: firstProposal.version, items: editedItems })
+      .expect(409)
+    expect(stale.body.error.code).toBe('PLAN_VERSION_CONFLICT')
+
+    const approved = await request(context.app)
+      .post(`/api/plans/${edited.body.plan.id}/approve`)
+      .set(authorized())
+      .send({ expectedVersion: edited.body.plan.version })
+      .expect(200)
+    expect(approved.body.plan.status).toBe('approved')
+
+    const afterApproval = await request(context.app).get('/api/plans/current').set(authorized()).expect(200)
+    expect(afterApproval.body.active.id).toBe(edited.body.plan.id)
+    expect(afterApproval.body.pending).toBeNull()
+
+    const nextGeneration = await request(context.app)
+      .post('/api/plans/generate')
+      .set(authorized())
+      .send({ startsAt: '2026-07-18T09:00:00.000Z', availableMinutes: 90, coachMode: 'focus' })
+      .expect(201)
+    const current = await request(context.app).get('/api/plans/current').set(authorized()).expect(200)
+    expect(current.body.active.id).toBe(edited.body.plan.id)
+    expect(current.body.pending.id).toBe(nextGeneration.body.plan.id)
+    expect(current.body.active.items.length).toBeGreaterThan(0)
+    expect(current.body.pending.items.length).toBeGreaterThan(0)
   })
 
   it('enforces tenant ownership at the API boundary', async () => {
@@ -194,7 +874,7 @@ describe('PrioriLearn API', () => {
       .set(authorized())
       .attach('file', Buffer.from(ics), { filename: 'calendar.ics', contentType: 'text/calendar' })
       .expect(201)
-    expect(preview.body.draft.status).toBe('needs_review')
+    expect(preview.body.draft.status).toBe('review')
     expect(preview.body.draft.busyBlocks).toHaveLength(1)
 
     const confirmation = await request(context.app)
@@ -205,15 +885,16 @@ describe('PrioriLearn API', () => {
     expect(confirmation.body.busyBlocks).toHaveLength(1)
   })
 
-  it('records connector revocation as a new consent decision', async () => {
-    const revocation = await request(context.app)
-      .delete('/api/connectors/canvas')
+  it('revokes access immediately and schedules account deletion for the lifecycle worker', async () => {
+    const deletion = await request(context.app)
+      .delete('/api/account')
       .set(authorized())
-      .expect(200)
-    expect(revocation.body).toMatchObject({ status: 'revoked', provider: 'canvas' })
-    expect(revocation.body.consent).toMatchObject({ purpose: 'canvas_read', granted: false, source: 'connector' })
+      .send({ confirmation: 'mai@demo.priorilearn.app' })
+      .expect(202)
+    expect(deletion.body.receipt).toMatchObject({ status: 'pending' })
+    await request(context.app).get('/api/me').set(authorized()).expect(401)
 
-    const consents = await request(context.app).get('/api/consents').set(authorized()).expect(200)
-    expect(consents.body.consents).toContainEqual(expect.objectContaining({ purpose: 'canvas_read', granted: false }))
+    await expect(processLifecycleJobs(context.repository, context.objectStore, 25, new Date(Date.now() + 60_000)))
+      .resolves.toMatchObject({ claimed: 1, completed: 1, failed: 0 })
   })
 })

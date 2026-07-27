@@ -1,7 +1,9 @@
-# PrioriLearn Focus Companion
+# PrioriLearn Canvas Context Bridge
 
-This MV3 Chrome extension is intentionally small: users open it on a Canvas page, it reads only the active page title/heading after that click, then it opens the PrioriLearn focus session.
+This MV3 Chrome extension is intentionally read only. After the user opens it on a Canvas page, it reads the visible page title or heading and opens PrioriLearn with that text as an unconfirmed manual-task draft.
 
-Load it through `chrome://extensions` → enable Developer mode → Load unpacked → select this `extension` directory.
+Nothing is written to Canvas, and nothing is saved in PrioriLearn until the user reviews the course and task fields and presses the normal save action. The extension requests only `activeTab` and `scripting`; it has no OAuth token or background access.
 
-The hackathon app includes an in-app preview of the same interaction. Production configuration will replace the local Vite URL in `popup.js` with the deployed application URL and pass a signed, consented context reference instead of page text.
+Load it through `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select this `extension` directory.
+
+The stable application origin is defined once in `popup.js`. Update that constant when the production domain changes.

@@ -2,11 +2,10 @@
   "manifest_version": 3,
   "name": "PrioriLearn Focus Companion",
   "version": "0.1.0",
-  "description": "Starts a PrioriLearn focus session from a Canvas course page.",
+  "description": "Hands visible Canvas course context to PrioriLearn for review.",
   "action": {
     "default_title": "PrioriLearn Focus Companion",
     "default_popup": "popup.html"
   },
-  "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": ["https://*.instructure.com/*", "https://canvas.*/*"]
+  "permissions": ["activeTab", "scripting"]
 }

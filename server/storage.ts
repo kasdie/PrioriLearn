@@ -51,7 +51,11 @@ export class SupabaseObjectStore implements ObjectStore {
   async put(key: string, content: Buffer): Promise<void> {
     const response = await fetch(this.objectUrl(key), {
       method: 'POST',
-      headers: this.headers({ 'Content-Type': 'application/octet-stream' }),
+      headers: this.headers({
+        'Content-Type': 'application/octet-stream',
+        // A retry of the same idempotency key must be able to resume the same object key.
+        'x-upsert': 'true',
+      }),
       body: content,
     })
     await this.assertSuccess(response, 'UPLOAD')

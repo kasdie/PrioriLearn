@@ -11,12 +11,24 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 22
+      - key: NODE_ENV
+        value: production
+      - key: STRUCTURED_LOGS
+        value: "true"
       - key: PERSISTENCE_DRIVER
         value: postgres
       - key: OPENAI_MODEL
         value: gpt-5.6
+      - key: EXTRACTION_WORKER_INTERVAL_MS
+        value: "3000"
+      - key: EXTRACTION_WORKER_BATCH_SIZE
+        value: "2"
       - key: APP_ORIGIN
         sync: false
+      - key: ENFORCE_ORIGIN_CHECK
+        value: true
+      - key: SESSION_COOKIE_SECURE
+        value: true
       - key: DATABASE_URL
         sync: false
       - key: SUPABASE_URL
@@ -29,3 +41,13 @@ services:
         generateValue: true
       - key: OPENAI_API_KEY
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production

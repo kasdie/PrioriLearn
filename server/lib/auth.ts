@@ -1,4 +1,4 @@
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
 
 const scrypt = promisify(scryptCallback)
@@ -20,4 +20,12 @@ export async function verifyPassword(password: string, storedHash: string): Prom
 
 export function createSessionToken(): string {
   return randomBytes(32).toString('base64url')
+}
+
+export function createAuthActionToken(): string {
+  return randomBytes(32).toString('base64url')
+}
+
+export function hashAuthActionToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
 }

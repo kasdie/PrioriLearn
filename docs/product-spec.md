@@ -15,8 +15,8 @@ PrioriLearn gives university students a defensible answer to “What should I do
 
 ## V1 requirements
 
-1. A student can create an email/password account, select Vietnamese or English, choose a coach mode, and later opt into Google sign-in.
-2. A student can import PDF/syllabus material, ICS calendar data, or manual tasks. Calendar and Canvas connections use distinct consent flows.
+1. A student can create an email/password account or use Google Sign-In, select Vietnamese or English, and choose a coach mode.
+2. A student can import PDF/TXT syllabus material, PNG/JPEG screenshots or scans, CSV/JSON/JSONL school exports, ICS calendar data, or manual tasks. Google Calendar and Canvas connections are not part of this release.
 3. The system extracts courses, grade weights, deadlines, and tasks into a review queue. Nothing reaches the plan until confirmed.
 4. The Today view displays one highest-priority task, explanation, Cost of Delay, starter step, and focus action.
 5. The plan is a proposal until the student approves it. A coach check-in can propose a replan but cannot apply it automatically.
@@ -57,4 +57,4 @@ Advanced settings expose each reminder and replanning boundary after onboarding.
 
 ## Current build coverage
 
-The current build implements private account onboarding, PostgreSQL/Supabase production persistence, the complete student decision loop, API-side review/approval boundaries, deterministic scoring/scheduling, sample PDF/text and ICS inputs, and the read-only extension preview. Google/Canvas OAuth callbacks, a field-level extraction editor, email verification/password reset, daily email delivery, and the institution surface remain post-demo milestones. The current build exposes no institution-facing student data.
+The current build implements private account onboarding with email/password or Google Sign-In, PostgreSQL/Supabase production persistence, the complete student decision loop, API-side review/approval boundaries, deterministic scoring/scheduling, PDF/PNG/JPEG/TXT/CSV/JSON and ICS inputs, and the read-only extension preview. Google Calendar/Canvas OAuth callbacks and the institution surface remain deferred. The current build exposes no institution-facing student data.

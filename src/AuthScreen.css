@@ -78,6 +78,26 @@
   padding: 52px 0 32px;
 }
 
+.auth-action-wrap {
+  position: relative;
+}
+
+.auth-action-icon {
+  width: 44px;
+  height: 44px;
+  margin-top: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #b9d2c5;
+  border-radius: 6px;
+  background: #edf6f1;
+  color: #176b52;
+}
+
+.auth-action-wrap .auth-heading {
+  margin-top: 18px;
+}
+
 .auth-segments {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -101,6 +121,35 @@
   background: white;
   color: #174c3a;
   box-shadow: 0 1px 4px rgba(28, 51, 40, .1);
+}
+
+.auth-back,
+.auth-forgot {
+  width: fit-content;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #24664f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.auth-back {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.auth-forgot {
+  margin-top: -6px;
+  justify-self: end;
+}
+
+.auth-back:hover,
+.auth-forgot:hover {
+  color: #123f30;
+  text-decoration: underline;
 }
 
 .auth-heading {
@@ -140,6 +189,12 @@
   border-left-color: #c75d4f;
   background: #faece9;
   color: #7d3c34;
+}
+
+.auth-message.success {
+  border-left-color: #287657;
+  background: #e8f4ed;
+  color: #245c47;
 }
 
 .auth-form {
@@ -252,7 +307,18 @@
   background: #e0e6e2;
 }
 
+.google-signin {
+  min-height: 43px;
+  overflow: hidden;
+}
+
+.google-signin > div,
+.google-signin iframe {
+  width: 100% !important;
+}
+
 .auth-demo {
+  margin-top: 10px;
   border: 1px solid #cbd8d0;
   background: white;
   color: #315448;
