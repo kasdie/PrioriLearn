@@ -4,7 +4,7 @@ services:
     name: priorilearn-api
     region: singapore
     plan: free
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeployTrigger: commit
