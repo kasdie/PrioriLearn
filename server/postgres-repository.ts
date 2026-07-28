@@ -55,6 +55,16 @@ function iso(value: unknown): string {
   throw new Error('Database returned an invalid timestamp.')
 }
 
+function dateOnly(value: unknown): string {
+  if (value instanceof Date) {
+    const year = value.getFullYear()
+    const month = String(value.getMonth() + 1).padStart(2, '0')
+    const day = String(value.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  return String(value).slice(0, 10)
+}
+
 function numberOrNull(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value)
 }
@@ -182,9 +192,7 @@ function rowLifecycleJob(row: Row): LifecycleJob {
 }
 
 function rowNotificationJob(row: Row): NotificationJob {
-  const digestDate = row.digest_date instanceof Date
-    ? row.digest_date.toISOString().slice(0, 10)
-    : String(row.digest_date).slice(0, 10)
+  const digestDate = dateOnly(row.digest_date)
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id),
@@ -455,8 +463,7 @@ export class PostgresRepository implements Repository {
         `SELECT tenant_id, user_id
          FROM auth_action_tokens
          WHERE token_hash = $1 AND purpose = 'email_verification'
-           AND consumed_at IS NULL AND expires_at > now()
-         FOR UPDATE`,
+           AND consumed_at IS NULL AND expires_at > now()`,
         [tokenHash],
       )
       if (!token) return undefined
@@ -490,8 +497,7 @@ export class PostgresRepository implements Repository {
         `SELECT tenant_id, user_id
          FROM auth_action_tokens
          WHERE token_hash = $1 AND purpose = 'password_reset'
-           AND consumed_at IS NULL AND expires_at > now()
-         FOR UPDATE`,
+           AND consumed_at IS NULL AND expires_at > now()`,
         [tokenHash],
       )
       if (!token) return undefined
