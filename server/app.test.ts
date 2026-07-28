@@ -193,6 +193,67 @@ describe('PrioriLearn API', () => {
     expect(otherProfile.body.profile).toEqual({ version: 0, signals: [], sourceEventCount: 0 })
   })
 
+  it('drafts planning preferences without mutating them, then saves a versioned weekly schedule', async () => {
+    const initial = await request(context.app).get('/api/planning/preferences').set(authorized()).expect(200)
+    expect(initial.body.preferences).toBeNull()
+
+    const draft = {
+      locale: 'vi',
+      coachMode: 'focus',
+      dailyMinutes: 90,
+      timezone: 'UTC',
+      utcOffsetMinutes: 0,
+      windows: [],
+    }
+    const chat = await request(context.app)
+      .post('/api/planning/chat')
+      .set(authorized())
+      .send({ message: 'Tôi muốn xếp lịch học trong tuần.', history: [], locale: 'vi', draft })
+      .expect(200)
+    expect(chat.body.reply.message).toContain('Mình')
+    expect(chat.body.reply.missingInformation).toContain('availability')
+    await request(context.app).get('/api/planning/preferences').set(authorized()).expect(200, { preferences: null })
+
+    await request(context.app)
+      .put('/api/planning/preferences')
+      .set(authorized())
+      .send({ expectedVersion: 0, ...draft })
+      .expect(400)
+
+    const saved = await request(context.app)
+      .put('/api/planning/preferences')
+      .set(authorized())
+      .send({
+        expectedVersion: 0,
+        ...draft,
+        windows: [
+          { dayOfWeek: 1, startMinute: 18 * 60, endMinute: 20 * 60 },
+          { dayOfWeek: 2, startMinute: 18 * 60, endMinute: 20 * 60 },
+        ],
+      })
+      .expect(200)
+    expect(saved.body.preferences).toMatchObject({ version: 1, locale: 'vi', coachMode: 'focus', dailyMinutes: 90 })
+
+    await request(context.app)
+      .put('/api/planning/preferences')
+      .set(authorized())
+      .send({ expectedVersion: 0, ...draft, windows: [{ dayOfWeek: 3, startMinute: 600, endMinute: 660 }] })
+      .expect(409)
+      .expect({ error: { code: 'PLANNING_PREFERENCES_VERSION_CONFLICT', message: 'Planning preferences changed. Reload them before saving again.' } })
+
+    const generated = await request(context.app)
+      .post('/api/plans/generate')
+      .set(authorized())
+      .send({ startsAt: '2026-06-15T08:00:00.000Z', locale: 'vi' })
+      .expect(201)
+    expect(generated.body.plan.items.length).toBeGreaterThan(0)
+    expect(generated.body.plan.items[0].firstStep).toContain('Mở')
+    expect(generated.body.plan.rationale).toContain('Kế hoạch')
+
+    const exported = await request(context.app).get('/api/account/export').set(authorized()).expect(200)
+    expect(exported.body.planningPreferences).toMatchObject({ version: 1, windows: expect.any(Array) })
+  })
+
   it('creates a private account and revokes its session on logout', async () => {
     await request(context.app).get('/api/auth/session').expect(200, { session: null })
 

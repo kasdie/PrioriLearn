@@ -22,13 +22,13 @@ const plan: ApiPlan = {
 describe('PlanProposalEditor', () => {
   it('retains an edited draft when the versioned save fails', async () => {
     const api = { editPlan: vi.fn().mockRejectedValue(new Error('Version conflict.')) }
-    render(<PlanProposalEditor plan={plan} taskName={() => 'Assignment'} onSaved={vi.fn()} api={api} />)
+    render(<PlanProposalEditor locale="en" plan={plan} taskName={() => 'Assignment'} onSaved={vi.fn()} api={api} />)
 
     fireEvent.change(screen.getByLabelText('Minutes Assignment'), { target: { value: '30' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save edits' }))
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Version conflict.'))
     expect(screen.getByLabelText('Minutes Assignment')).toHaveValue(30)
-    expect(api.editPlan).toHaveBeenCalledWith(plan, [expect.objectContaining({ minutes: 30 })])
+    expect(api.editPlan).toHaveBeenCalledWith(plan, [expect.objectContaining({ minutes: 30 })], 'en')
   })
 })

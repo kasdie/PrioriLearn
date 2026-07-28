@@ -14,6 +14,7 @@ import type {
   LearnerProfileSignal,
   LifecycleJob,
   NotificationJob,
+  PlanningPreferences,
   PriorityAssessment,
   ReplanProposal,
   SourceDocument,
@@ -33,6 +34,7 @@ import {
   type DocumentUploadResult,
   type IcsImportResult,
   type PlanProposalInput,
+  type PlanningPreferencesInput,
   type Repository,
 } from './repository.js'
 
@@ -100,6 +102,23 @@ function rowLearnerProfile(row: Row): LearnerProfile {
     userId: String(row.user_id),
     approvedSignals: json<LearnerProfileSignal[]>(row.approved_signals, []),
     sourceEventCount: Number(row.source_event_count),
+    version: Number(row.version),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  }
+}
+
+function rowPlanningPreferences(row: Row): PlanningPreferences {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    userId: String(row.user_id),
+    locale: row.locale as PlanningPreferences['locale'],
+    coachMode: row.coach_mode as PlanningPreferences['coachMode'],
+    dailyMinutes: Number(row.daily_minutes),
+    timezone: String(row.timezone),
+    utcOffsetMinutes: Number(row.utc_offset_minutes),
+    windows: json<PlanningPreferences['windows']>(row.windows, []),
     version: Number(row.version),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -1300,6 +1319,72 @@ export class PostgresRepository implements Repository {
         throw new RepositoryError('LEARNER_PROFILE_VERSION_CONFLICT', 'The learner profile changed. Reload it before saving again.')
       }
       return rowLearnerProfile(row)
+    })
+  }
+
+  async getPlanningPreferences(tenantId: string, userId: string): Promise<PlanningPreferences | undefined> {
+    return this.withTenant(tenantId, async (client) => {
+      const row = await this.oneOrUndefined(
+        client,
+        'SELECT * FROM planning_preferences WHERE tenant_id = $1 AND user_id = $2',
+        [tenantId, userId],
+      )
+      return row ? rowPlanningPreferences(row) : undefined
+    })
+  }
+
+  async updatePlanningPreferences(
+    tenantId: string,
+    userId: string,
+    expectedVersion: number,
+    input: PlanningPreferencesInput,
+  ): Promise<PlanningPreferences> {
+    return this.withTenant(tenantId, async (client) => {
+      if (expectedVersion === 0) {
+        const inserted = await client.query<Row>(
+          `INSERT INTO planning_preferences (
+             tenant_id, user_id, locale, coach_mode, daily_minutes, timezone, utc_offset_minutes, windows, version
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)
+           ON CONFLICT (user_id) DO NOTHING
+           RETURNING *`,
+          [
+            tenantId,
+            userId,
+            input.locale,
+            input.coachMode,
+            input.dailyMinutes,
+            input.timezone,
+            input.utcOffsetMinutes,
+            JSON.stringify(input.windows),
+          ],
+        )
+        const row = inserted.rows[0]
+        if (row) return rowPlanningPreferences(row)
+      }
+
+      const updated = await client.query<Row>(
+        `UPDATE planning_preferences
+         SET locale = $4, coach_mode = $5, daily_minutes = $6, timezone = $7,
+             utc_offset_minutes = $8, windows = $9, version = version + 1, updated_at = now()
+         WHERE tenant_id = $1 AND user_id = $2 AND version = $3
+         RETURNING *`,
+        [
+          tenantId,
+          userId,
+          expectedVersion,
+          input.locale,
+          input.coachMode,
+          input.dailyMinutes,
+          input.timezone,
+          input.utcOffsetMinutes,
+          JSON.stringify(input.windows),
+        ],
+      )
+      const row = updated.rows[0]
+      if (!row) {
+        throw new RepositoryError('PLANNING_PREFERENCES_VERSION_CONFLICT', 'Planning preferences changed. Reload them before saving again.')
+      }
+      return rowPlanningPreferences(row)
     })
   }
 

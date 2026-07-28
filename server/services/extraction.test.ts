@@ -65,6 +65,9 @@ describe('extraction worker', () => {
       async draftCoachingProposal(input) {
         return new MockAiProvider().draftCoachingProposal(input)
       },
+      async draftPlanningPreferences(input) {
+        return new MockAiProvider().draftPlanningPreferences(input)
+      },
     }
 
     const firstAttemptAt = new Date(Date.now() + 60_000)

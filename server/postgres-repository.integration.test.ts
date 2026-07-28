@@ -324,6 +324,39 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
       .rejects.toMatchObject({ code: 'EXTRACTION_LEASE_CONFLICT' })
   })
 
+  test('planning preferences are versioned and isolated by tenant RLS', async () => {
+    const owner = await repository.createPersonalAccount({
+      email: 'planning-owner@example.test',
+      password: 'planning-password',
+      name: 'Planning Owner',
+      locale: 'vi',
+    })
+    const other = await repository.createPersonalAccount({
+      email: 'planning-other@example.test',
+      password: 'planning-password',
+      name: 'Planning Other',
+      locale: 'en',
+    })
+    const saved = await repository.updatePlanningPreferences(owner.tenantId, owner.id, 0, {
+      locale: 'vi',
+      coachMode: 'focus',
+      dailyMinutes: 90,
+      timezone: 'Asia/Ho_Chi_Minh',
+      utcOffsetMinutes: 420,
+      windows: [{ dayOfWeek: 1, startMinute: 1140, endMinute: 1260 }],
+    })
+    expect(saved.version).toBe(1)
+    expect(await repository.getPlanningPreferences(other.tenantId, owner.id)).toBeUndefined()
+    await expect(repository.updatePlanningPreferences(owner.tenantId, owner.id, 0, {
+      locale: 'vi',
+      coachMode: 'gentle',
+      dailyMinutes: 60,
+      timezone: 'Asia/Ho_Chi_Minh',
+      utcOffsetMinutes: 420,
+      windows: [{ dayOfWeek: 2, startMinute: 1140, endMinute: 1200 }],
+    })).rejects.toMatchObject({ code: 'PLANNING_PREFERENCES_VERSION_CONFLICT' })
+  })
+
   test('the lifecycle claim capability leases a tenant job and schedules a retry', async () => {
     const alice = await repository.findUserByEmail('alice@example.test')
     if (!alice) throw new Error('Test user was not created.')

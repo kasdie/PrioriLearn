@@ -21,7 +21,7 @@ const authCopy = {
     register: 'Tạo tài khoản',
     loginTitle: 'Tiếp tục kế hoạch học của bạn',
     registerTitle: 'Tạo không gian học riêng',
-    loginIntro: 'Quay lại với các ưu tiên, deadline và kế hoạch bạn đã xác nhận.',
+    loginIntro: 'Quay lại với các ưu tiên, hạn nộp và kế hoạch bạn đã xác nhận.',
     registerIntro: 'Dữ liệu và kế hoạch của bạn được tách biệt trong một tài khoản riêng.',
     name: 'Tên của bạn',
     email: 'Email',
@@ -33,9 +33,9 @@ const authCopy = {
     creating: 'Đang tạo tài khoản...',
     continueLogin: 'Đăng nhập',
     continueRegister: 'Tạo tài khoản',
-    demo: 'Dùng workspace demo',
-    demoNote: 'Workspace demo dùng dữ liệu mẫu chung và có thể được đặt lại.',
-    privacy: 'Mỗi tài khoản thật có workspace và dữ liệu riêng.',
+    demo: 'Dùng không gian học thử',
+    demoNote: 'Không gian học thử dùng dữ liệu mẫu chung và có thể được đặt lại.',
+    privacy: 'Mỗi tài khoản thật có không gian học và dữ liệu riêng.',
     imageKicker: 'Ưu tiên rõ ràng',
     imageTitle: 'Một việc đúng lúc tốt hơn một danh sách dài.',
     imageBody: 'Bắt đầu từ điều quan trọng nhất hôm nay.',
@@ -107,15 +107,15 @@ function readableAuthError(error: unknown, locale: Locale): string {
       en: 'Check the form fields and try again.',
     },
     INVALID_GOOGLE_CREDENTIAL: {
-      vi: 'Google khong the xac minh lan dang nhap nay. Vui long thu lai.',
+      vi: 'Google không thể xác minh lần đăng nhập này. Vui lòng thử lại.',
       en: 'Google could not verify this sign-in. Please try again.',
     },
     GOOGLE_ACCOUNT_CONFLICT: {
-      vi: 'Tai khoan Google nay dang duoc lien ket voi mot tai khoan khac.',
+      vi: 'Tài khoản Google này đang được liên kết với một tài khoản khác.',
       en: 'This Google account is already linked to another account.',
     },
     GOOGLE_SIGN_IN_NOT_CONFIGURED: {
-      vi: 'Dang nhap Google chua duoc cau hinh cho moi truong nay.',
+      vi: 'Đăng nhập Google chưa được cấu hình cho môi trường này.',
       en: 'Google Sign-In is not configured for this environment.',
     },
     EMAIL_DELIVERY_NOT_CONFIGURED: {
@@ -238,7 +238,7 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
         })
       })
       .catch(() => {
-        if (active) setError(locale === 'vi' ? 'Khong the tai nut dang nhap Google. Vui long thu lai.' : 'Could not load Google Sign-In. Please try again.')
+        if (active) setError(locale === 'vi' ? 'Không thể tải nút đăng nhập Google. Vui lòng thử lại.' : 'Could not load Google Sign-In. Please try again.')
       })
     return () => {
       active = false
@@ -248,7 +248,7 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
   return (
     <main className="auth-shell">
       <section className="auth-visual" aria-label={t.imageTitle}>
-        <img src={focusImage} alt="Student reviewing a study plan beside a laptop" />
+        <img src={focusImage} alt={locale === 'vi' ? 'Sinh viên xem lại kế hoạch học tập bên máy tính' : 'Student reviewing a study plan beside a laptop'} />
         <div className="auth-visual-shade" />
         <div className="auth-visual-copy">
           <span>{t.imageKicker}</span>
@@ -263,7 +263,7 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
             <span className="brand-mark"><Focus size={19} strokeWidth={2.6} /></span>
             <span>priori<span>learn</span></span>
           </div>
-          <div className="language-switch" aria-label="Language">
+          <div className="language-switch" aria-label={locale === 'vi' ? 'Ngôn ngữ' : 'Language'}>
             <button className={locale === 'vi' ? 'selected' : ''} onClick={() => onLocaleChange('vi')} type="button">VI</button>
             <button className={locale === 'en' ? 'selected' : ''} onClick={() => onLocaleChange('en')} type="button">EN</button>
           </div>
@@ -365,7 +365,7 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
           {mode !== 'forgot' && (
             <>
               <div className="auth-divider"><span>{locale === 'vi' ? 'hoặc' : 'or'}</span></div>
-              {googleClientId && <div className="google-signin" ref={googleButtonRef} aria-label={locale === 'vi' ? 'Dang nhap voi Google' : 'Sign in with Google'} />}
+              {googleClientId && <div className="google-signin" ref={googleButtonRef} aria-label={locale === 'vi' ? 'Đăng nhập với Google' : 'Sign in with Google'} />}
               <button className="auth-demo" type="button" disabled={busy} onClick={() => void enterDemo()}>
                 <Sparkles size={17} />
                 <span>{t.demo}</span>

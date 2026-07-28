@@ -13,19 +13,19 @@ type Props = {
 
 const signalCopy: Record<ApiLearnerSignal['kind'], Record<Locale, { label: string; placeholder: string }>> = {
   focus_duration: {
-    vi: { label: 'Thoi luong tap trung', placeholder: 'Vi du: 25 phut' },
+    vi: { label: 'Thời lượng tập trung', placeholder: 'Ví dụ: 25 phút' },
     en: { label: 'Focus length', placeholder: 'For example: 25 minutes' },
   },
   study_window: {
-    vi: { label: 'Khoang thoi gian hoc', placeholder: 'Vi du: Buoi toi thuong de tap trung' },
+    vi: { label: 'Khoảng thời gian học', placeholder: 'Ví dụ: Buổi tối thường dễ tập trung' },
     en: { label: 'Study window', placeholder: 'For example: I focus best in the evening' },
   },
   friction_pattern: {
-    vi: { label: 'Tro ngai thuong gap', placeholder: 'Vi du: Kho bat dau khi task qua lon' },
+    vi: { label: 'Trở ngại thường gặp', placeholder: 'Ví dụ: Khó bắt đầu khi task quá lớn' },
     en: { label: 'Common friction', placeholder: 'For example: I stall when a task feels too large' },
   },
   coach_preference: {
-    vi: { label: 'Cach Coach ho tro', placeholder: 'Vi du: Nhac toi bang buoc dau tien rat nho' },
+    vi: { label: 'Cách Priori hỗ trợ', placeholder: 'Ví dụ: Nhắc tôi bằng một bước đầu tiên rất nhỏ' },
     en: { label: 'Coach preference', placeholder: 'For example: Give me one very small first step' },
   },
 }
@@ -49,12 +49,12 @@ export function LearnerProfilePanel({ locale, profile, busy, onSave }: Props) {
   const canSave = !busy && !invalid && (profile.version > 0 || signals.length > 0)
   const copy = locale === 'vi'
     ? {
-      title: 'Ho so hoc tap',
-      detail: 'Chi cac tin hieu ban luu moi duoc dua vao de xuat Coach. Chung khong tu dong thay doi ke hoach.',
-      empty: 'Chua co tin hieu nao. Them mot preference de Coach co them ngu canh.',
-      add: 'Them tin hieu',
-      save: 'Luu profile',
-      remove: 'Xoa tin hieu',
+      title: 'Hồ sơ học tập',
+      detail: 'Chỉ các tín hiệu bạn lưu mới được dùng trong đề xuất của Priori. Chúng không tự động thay đổi kế hoạch.',
+      empty: 'Chưa có tín hiệu nào. Thêm một sở thích để Priori có thêm ngữ cảnh.',
+      add: 'Thêm tín hiệu',
+      save: 'Lưu hồ sơ',
+      remove: 'Xóa tín hiệu',
     }
     : {
       title: 'Learner profile',

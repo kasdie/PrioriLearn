@@ -12,7 +12,7 @@ const extraction = {
 describe('ExtractionReviewEditor', () => {
   it('requires warnings to be acknowledged before confirming reviewed data', () => {
     const onConfirm = vi.fn()
-    render(<ExtractionReviewEditor extraction={extraction} busy={false} onChange={vi.fn()} onConfirm={onConfirm} />)
+    render(<ExtractionReviewEditor locale="en" extraction={extraction} busy={false} onChange={vi.fn()} onConfirm={onConfirm} />)
 
     fireEvent.click(screen.getByRole('button', { name: /confirm reviewed data/i }))
     expect(onConfirm).not.toHaveBeenCalled()

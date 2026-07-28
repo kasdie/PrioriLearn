@@ -95,10 +95,10 @@ export function AuthActionScreen({
   return (
     <main className="auth-shell">
       <section className="auth-visual" aria-label={title}>
-        <img src={focusImage} alt="Student reviewing a study plan beside a laptop" />
+        <img src={focusImage} alt={locale === 'vi' ? 'Sinh viên xem lại kế hoạch học tập bên máy tính' : 'Student reviewing a study plan beside a laptop'} />
         <div className="auth-visual-shade" />
         <div className="auth-visual-copy">
-          <span>{locale === 'vi' ? 'Bảo vệ workspace' : 'Protect your workspace'}</span>
+          <span>{locale === 'vi' ? 'Bảo vệ không gian học' : 'Protect your workspace'}</span>
           <h2>{locale === 'vi' ? 'Dữ liệu học tập của bạn luôn thuộc về bạn.' : 'Your study data stays yours.'}</h2>
           <p>{locale === 'vi' ? 'Một bước ngắn để giữ tài khoản an toàn.' : 'One short step to keep your account secure.'}</p>
         </div>
@@ -110,7 +110,7 @@ export function AuthActionScreen({
             <span className="brand-mark"><Focus size={19} strokeWidth={2.6} /></span>
             <span>priori<span>learn</span></span>
           </div>
-          <div className="language-switch" aria-label="Language">
+          <div className="language-switch" aria-label={locale === 'vi' ? 'Ngôn ngữ' : 'Language'}>
             <button className={locale === 'vi' ? 'selected' : ''} onClick={() => onLocaleChange('vi')} type="button">VI</button>
             <button className={locale === 'en' ? 'selected' : ''} onClick={() => onLocaleChange('en')} type="button">EN</button>
           </div>
@@ -154,8 +154,8 @@ export function AuthActionScreen({
                     />
                     <button
                       type="button"
-                      title={showPassword ? 'Hide password' : 'Show password'}
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      title={showPassword ? (locale === 'vi' ? 'Ẩn mật khẩu' : 'Hide password') : (locale === 'vi' ? 'Hiện mật khẩu' : 'Show password')}
+                      aria-label={showPassword ? (locale === 'vi' ? 'Ẩn mật khẩu' : 'Hide password') : (locale === 'vi' ? 'Hiện mật khẩu' : 'Show password')}
                       onClick={() => setShowPassword((visible) => !visible)}
                     >
                       {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}

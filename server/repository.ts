@@ -14,6 +14,7 @@ import type {
   LearnerProfileSignal,
   LifecycleJob,
   NotificationJob,
+  PlanningPreferences,
   PriorityAssessment,
   ReplanProposal,
   SourceDocument,
@@ -44,6 +45,10 @@ export type DocumentImportResult = { document: SourceDocument; courses: Course[]
 export type IcsImportResult = { draft: ImportDraft; tasks: Task[]; busyBlocks: AvailabilityBlock[] }
 export type CursorPage<T> = { items: T[]; next?: { createdAt: string; id: string } }
 export type DocumentPageInput = { limit: number; before?: { createdAt: string; id: string } }
+export type PlanningPreferencesInput = Pick<
+  PlanningPreferences,
+  'locale' | 'coachMode' | 'dailyMinutes' | 'timezone' | 'utcOffsetMinutes' | 'windows'
+>
 
 export class RepositoryError extends Error {
   constructor(
@@ -58,7 +63,8 @@ export class RepositoryError extends Error {
       | 'LIFECYCLE_LEASE_CONFLICT'
       | 'NOTIFICATION_LEASE_CONFLICT'
       | 'EXTRACTION_LEASE_CONFLICT'
-      | 'LEARNER_PROFILE_VERSION_CONFLICT',
+      | 'LEARNER_PROFILE_VERSION_CONFLICT'
+      | 'PLANNING_PREFERENCES_VERSION_CONFLICT',
     message: string,
   ) {
     super(message)
@@ -128,6 +134,8 @@ export interface Repository {
   listConsents(tenantId: string): Awaitable<ConsentAudit[]>
   getLearnerProfile(tenantId: string, userId: string): Awaitable<LearnerProfile | undefined>
   updateLearnerProfile(tenantId: string, userId: string, expectedVersion: number, signals: LearnerProfileSignal[]): Awaitable<LearnerProfile>
+  getPlanningPreferences(tenantId: string, userId: string): Awaitable<PlanningPreferences | undefined>
+  updatePlanningPreferences(tenantId: string, userId: string, expectedVersion: number, input: PlanningPreferencesInput): Awaitable<PlanningPreferences>
   saveImportDraft(draft: ImportDraft): Awaitable<ImportDraft>
   getImportDraft(tenantId: string, draftId: string): Awaitable<ImportDraft | undefined>
   confirmIcsImport(tenantId: string, draftId: string): Awaitable<IcsImportResult>
@@ -185,6 +193,7 @@ export class InMemoryRepository implements Repository {
   private replanProposals = new Map<string, ReplanProposal>()
   private consents = new Map<string, ConsentAudit>()
   private learnerProfiles = new Map<string, LearnerProfile>()
+  private planningPreferences = new Map<string, PlanningPreferences>()
   private importDrafts = new Map<string, ImportDraft>()
   private notificationJobs = new Map<string, NotificationJob>()
   private lifecycleJobs = new Map<string, LifecycleJob>()
@@ -890,6 +899,51 @@ export class InMemoryRepository implements Repository {
     return { ...updated, approvedSignals: updated.approvedSignals.map((signal) => ({ ...signal })) }
   }
 
+  getPlanningPreferences(tenantId: string, userId: string): PlanningPreferences | undefined {
+    const preferences = this.planningPreferences.get(userId)
+    if (!preferences || preferences.tenantId !== tenantId) return undefined
+    return { ...preferences, windows: preferences.windows.map((window) => ({ ...window })) }
+  }
+
+  updatePlanningPreferences(
+    tenantId: string,
+    userId: string,
+    expectedVersion: number,
+    input: PlanningPreferencesInput,
+  ): PlanningPreferences {
+    const existing = this.planningPreferences.get(userId)
+    const timestamp = nowIso()
+    if (!existing) {
+      if (expectedVersion !== 0) {
+        throw new RepositoryError('PLANNING_PREFERENCES_VERSION_CONFLICT', 'Planning preferences changed. Reload them before saving again.')
+      }
+      const preferences: PlanningPreferences = {
+        id: randomUUID(),
+        tenantId,
+        userId,
+        ...input,
+        windows: input.windows.map((window) => ({ ...window })),
+        version: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }
+      this.planningPreferences.set(userId, preferences)
+      return { ...preferences, windows: preferences.windows.map((window) => ({ ...window })) }
+    }
+    if (existing.tenantId !== tenantId || existing.version !== expectedVersion) {
+      throw new RepositoryError('PLANNING_PREFERENCES_VERSION_CONFLICT', 'Planning preferences changed. Reload them before saving again.')
+    }
+    const updated: PlanningPreferences = {
+      ...existing,
+      ...input,
+      windows: input.windows.map((window) => ({ ...window })),
+      version: existing.version + 1,
+      updatedAt: timestamp,
+    }
+    this.planningPreferences.set(userId, updated)
+    return { ...updated, windows: updated.windows.map((window) => ({ ...window })) }
+  }
+
   saveImportDraft(draft: ImportDraft): ImportDraft {
     this.importDrafts.set(draft.id, draft)
     return draft
@@ -1219,6 +1273,7 @@ export class InMemoryRepository implements Repository {
     deleteOwned(this.replanProposals)
     deleteOwned(this.consents)
     deleteOwned(this.learnerProfiles)
+    deleteOwned(this.planningPreferences)
     deleteOwned(this.importDrafts)
     deleteOwned(this.notificationJobs)
     deleteOwned(this.events)

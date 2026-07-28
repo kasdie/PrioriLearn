@@ -3,9 +3,13 @@ import { zodTextFormat } from 'openai/helpers/zod'
 import {
   CoachingProposalSchema,
   DocumentExtractionSchema,
+  PlanningAssistantReplySchema,
   type CoachingProposal,
   type DocumentExtraction,
   type LearnerProfileSignal,
+  type Locale,
+  type PlanningAssistantReply,
+  type PlanningPreferenceDraft,
   type StudyPlan,
 } from '../domain/contracts.js'
 
@@ -20,12 +24,22 @@ type CoachingInput = {
   note?: string
   plan: StudyPlan
   learnerSignals?: LearnerProfileSignal[]
+  locale: Locale
+}
+
+export type PlanningConversationInput = {
+  locale: Locale
+  message: string
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+  draft: PlanningPreferenceDraft
+  confirmedTasks: Array<{ title: string; dueAt: string | null; estimatedMinutes: number }>
 }
 
 export interface AiProvider {
   readonly name: string
   extractDocument(input: DocumentInput): Promise<DocumentExtraction>
   draftCoachingProposal(input: CoachingInput): Promise<CoachingProposal>
+  draftPlanningPreferences(input: PlanningConversationInput): Promise<PlanningAssistantReply>
 }
 
 export class MockAiProvider implements AiProvider {
@@ -62,12 +76,40 @@ export class MockAiProvider implements AiProvider {
     const estimatedMinutes = preferredDuration
       ? Math.max(10, Math.min(45, Number(preferredDuration)))
       : 20
+    return input.locale === 'vi'
+      ? {
+        title: 'Giảm bước khởi động, vẫn giữ đúng hạn',
+        rationale: `Bạn cho biết trở ngại là ${input.friction}. Kế hoạch đã duyệt vẫn giữ nguyên cho đến khi bạn duyệt đề xuất này.`,
+        changes: [`Rút block đầu xuống ${estimatedMinutes} phút`, 'Giữ 10 phút đệm để hồi phục'],
+        firstStep: firstItem?.firstStep ?? 'Mở yêu cầu bài tập và đọc yêu cầu đầu tiên.',
+        estimatedMinutes,
+      }
+      : {
+        title: 'Lower the activation energy, preserve the deadline',
+        rationale: `The check-in reported ${input.friction}. The approved plan remains unchanged until this proposal is approved.`,
+        changes: [`Shorten the first block to ${estimatedMinutes} minutes`, 'Keep a 10-minute recovery buffer'],
+        firstStep: firstItem?.firstStep ?? 'Open the task brief and read the first requirement.',
+        estimatedMinutes,
+      }
+  }
+
+  async draftPlanningPreferences(input: PlanningConversationInput): Promise<PlanningAssistantReply> {
+    const missingInformation: PlanningAssistantReply['missingInformation'] = []
+    if (input.draft.windows.length === 0) missingInformation.push('availability')
     return {
-      title: 'Lower the activation energy, preserve the deadline',
-      rationale: `The check-in reported ${input.friction}. The approved plan remains unchanged until this proposal is approved.`,
-      changes: [`Shorten the first block to ${estimatedMinutes} minutes`, 'Keep a 10-minute recovery buffer'],
-      firstStep: firstItem?.firstStep ?? 'Open the task brief and read the first requirement.',
-      estimatedMinutes,
+      message: input.locale === 'vi'
+        ? input.draft.windows.length === 0
+          ? 'Mình đã ghi nhận mục tiêu của bạn. Hãy chọn ít nhất một khung giờ rảnh bên dưới; mình sẽ chỉ dùng những khung bạn xác nhận để xếp lịch tuần.'
+          : 'Mình đã đối chiếu khối lượng công việc với các khung giờ đang chọn. Bạn có thể chỉnh cường độ hoặc thời lượng mỗi ngày trước khi lưu.'
+        : input.draft.windows.length === 0
+          ? 'I have noted your goal. Choose at least one free window below; only confirmed windows will be used for the weekly plan.'
+          : 'I compared the workload with your selected windows. You can adjust the intensity or daily limit before saving.',
+      suggestion: {
+        coachMode: input.draft.coachMode,
+        dailyMinutes: input.draft.dailyMinutes,
+        windows: input.draft.windows,
+      },
+      missingInformation,
     }
   }
 }
@@ -97,19 +139,48 @@ export class OpenAiProvider implements AiProvider {
   }
 
   async draftCoachingProposal(input: CoachingInput): Promise<CoachingProposal> {
+    const responseLanguage = input.locale === 'vi' ? 'Vietnamese' : 'English'
     const response = await this.client.responses.parse({
       model: this.model,
       store: false,
       input: [
         {
           role: 'system',
-          content: 'You draft small, realistic study-plan changes. Never claim a plan has changed; this output is only a proposal awaiting approval. Learner signals are self-reported preferences. Use them only when relevant, do not infer new personal information, and never treat them as facts about academic ability.',
+          content: `You draft small, realistic study-plan changes. Respond entirely in ${responseLanguage}, except for user-provided task titles. Never claim a plan has changed; this output is only a proposal awaiting approval. Learner signals are self-reported preferences. Use them only when relevant, do not infer new personal information, and never treat them as facts about academic ability.`,
         },
         { role: 'user', content: JSON.stringify(input) },
       ],
       text: { format: zodTextFormat(CoachingProposalSchema, 'coaching_proposal') },
     })
     if (!response.output_parsed) throw new Error('MODEL_RETURNED_NO_PROPOSAL')
+    return response.output_parsed
+  }
+
+  async draftPlanningPreferences(input: PlanningConversationInput): Promise<PlanningAssistantReply> {
+    const responseLanguage = input.locale === 'vi' ? 'Vietnamese' : 'English'
+    const response = await this.client.responses.parse({
+      model: this.model,
+      store: false,
+      input: [
+        {
+          role: 'system',
+          content: [
+            `You are a study-planning intake assistant. Respond entirely in ${responseLanguage}, except for user-provided task titles.`,
+            'Ask concise questions about free time, preferred intensity, and realistic daily study capacity.',
+            'Return a complete suggestion every turn. Preserve existing draft values unless the user explicitly changes them.',
+            'A study window uses dayOfWeek 0=Sunday through 6=Saturday and local minutes after midnight.',
+            'Never invent free time. If availability is not explicit, keep windows unchanged and include availability in missingInformation.',
+            'Never claim a plan was created or changed. This is only a draft that the student must review and save.',
+          ].join(' '),
+        },
+        {
+          role: 'user',
+          content: JSON.stringify(input),
+        },
+      ],
+      text: { format: zodTextFormat(PlanningAssistantReplySchema, 'planning_intake_reply') },
+    })
+    if (!response.output_parsed) throw new Error('MODEL_RETURNED_NO_PLANNING_REPLY')
     return response.output_parsed
   }
 }

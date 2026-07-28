@@ -25,14 +25,15 @@ export class AppErrorBoundary extends Component<PropsWithChildren, ErrorBoundary
 
   render(): ReactNode {
     if (!this.state.failed) return this.props.children
+    const vietnamese = document.documentElement.lang.toLowerCase().startsWith('vi')
     return (
       <main className="fatal-error" role="alert">
         <p className="fatal-error__eyebrow">PrioriLearn</p>
-        <h1>We could not open your workspace.</h1>
-        <p>Your saved account data is still intact. Reload the application to try again.</p>
+        <h1>{vietnamese ? 'Không thể mở không gian học của bạn.' : 'We could not open your workspace.'}</h1>
+        <p>{vietnamese ? 'Dữ liệu đã lưu vẫn còn nguyên. Hãy tải lại ứng dụng để thử lại.' : 'Your saved account data is still intact. Reload the application to try again.'}</p>
         <button type="button" onClick={() => window.location.reload()}>
           <RefreshCw aria-hidden="true" size={18} />
-          Reload application
+          {vietnamese ? 'Tải lại ứng dụng' : 'Reload application'}
         </button>
       </main>
     )

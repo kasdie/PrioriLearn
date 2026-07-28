@@ -170,7 +170,44 @@ export type ApiSourceDocument = {
   extraction?: DocumentExtraction
   extractionProvider?: string
   expiresAt: string
+  rawDeletedAt?: string
+  createdAt: string
   updatedAt?: string
+}
+
+export type ApiStudyWindow = {
+  dayOfWeek: number
+  startMinute: number
+  endMinute: number
+}
+
+export type ApiPlanningPreferences = {
+  id: string
+  locale: 'vi' | 'en'
+  coachMode: 'gentle' | 'focus' | 'discipline'
+  dailyMinutes: number
+  timezone: string
+  utcOffsetMinutes: number
+  windows: ApiStudyWindow[]
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type ApiPlanningDraft = Pick<
+  ApiPlanningPreferences,
+  'locale' | 'coachMode' | 'dailyMinutes' | 'timezone' | 'utcOffsetMinutes' | 'windows'
+>
+
+export type ApiPlanningMessage = {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export type ApiPlanningChatReply = {
+  message: string
+  draft: ApiPlanningDraft
+  missingInformation: Array<'availability' | 'intensity'>
 }
 
 type ApiErrorPayload = { error?: { code?: string; message?: string } }
@@ -228,6 +265,25 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 }
 
+async function waitForDocumentExtraction(initial: ApiSourceDocument): Promise<{ documentId: string; extraction: DocumentExtraction; provider?: string }> {
+  let document = initial
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if ((document.status === 'review' || document.status === 'confirmed') && document.extraction) {
+      return {
+        documentId: document.id,
+        extraction: document.extraction,
+        provider: document.extractionProvider,
+      }
+    }
+    if (document.status === 'extraction_failed') {
+      throw new ApiClientError(422, 'EXTRACTION_FAILED', 'Document extraction failed. Retry to start a fresh queue attempt.')
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1_500))
+    document = (await apiFetch<{ document: ApiSourceDocument }>(`/documents/${document.id}`)).document
+  }
+  throw new ApiClientError(202, 'EXTRACTION_PENDING', 'Extraction is still running. Retry shortly to resume this document.')
+}
+
 export const prioriApi = {
   async bootstrap(): Promise<ApiSession | null> {
     await parseResponse(await fetch(apiUrl('/health'), { credentials: 'include' }))
@@ -278,8 +334,8 @@ export const prioriApi = {
     }
   },
 
-  async dashboard(): Promise<ApiDashboard> {
-    return apiFetch<ApiDashboard>('/dashboard')
+  async dashboard(locale?: 'vi' | 'en'): Promise<ApiDashboard> {
+    return apiFetch<ApiDashboard>(`/dashboard${locale ? `?locale=${locale}` : ''}`)
   },
 
   async metrics(): Promise<ApiMetrics> {
@@ -366,24 +422,17 @@ export const prioriApi = {
       body: form,
       headers: { 'Idempotency-Key': idempotencyKey },
     })
-    let document = (await apiFetch<{ document: ApiSourceDocument }>(`/documents/${uploaded.document.id}/extract`, {
+    const document = (await apiFetch<{ document: ApiSourceDocument }>(`/documents/${uploaded.document.id}/extract`, {
       method: 'POST',
     })).document
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      if ((document.status === 'review' || document.status === 'confirmed') && document.extraction) {
-        return {
-          documentId: document.id,
-          extraction: document.extraction,
-          provider: document.extractionProvider,
-        }
-      }
-      if (document.status === 'extraction_failed') {
-        throw new ApiClientError(422, 'EXTRACTION_FAILED', 'Document extraction failed. Retry to start a fresh queue attempt.')
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 1_500))
-      document = (await apiFetch<{ document: ApiSourceDocument }>(`/documents/${document.id}`)).document
-    }
-    throw new ApiClientError(202, 'EXTRACTION_PENDING', 'Extraction is still running. Retry shortly to resume this document.')
+    return waitForDocumentExtraction(document)
+  },
+
+  async extractDocument(documentId: string): Promise<{ documentId: string; extraction: DocumentExtraction; provider?: string }> {
+    const document = (await apiFetch<{ document: ApiSourceDocument }>(`/documents/${documentId}/extract`, {
+      method: 'POST',
+    })).document
+    return waitForDocumentExtraction(document)
   },
 
   confirmDocument(documentId: string, extraction?: DocumentExtraction): Promise<unknown> {
@@ -395,6 +444,16 @@ export const prioriApi = {
 
   document(documentId: string): Promise<{ document: ApiSourceDocument }> {
     return apiFetch(`/documents/${documentId}`)
+  },
+
+  documents(cursor?: string, limit = 50): Promise<{ documents: ApiSourceDocument[]; nextCursor?: string }> {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (cursor) parameters.set('cursor', cursor)
+    return apiFetch(`/documents?${parameters.toString()}`)
+  },
+
+  async deleteDocument(documentId: string): Promise<void> {
+    await apiFetch(`/documents/${documentId}`, { method: 'DELETE' })
   },
 
   async importIcs(file: File): Promise<{ draftId: string; taskCount: number; busyBlockCount: number }> {
@@ -416,10 +475,39 @@ export const prioriApi = {
     return apiFetch(`/imports/${draftId}`)
   },
 
-  async generatePlan(): Promise<ApiPlan> {
+  async planningPreferences(): Promise<ApiPlanningPreferences | null> {
+    const response = await apiFetch<{ preferences: ApiPlanningPreferences | null }>('/planning/preferences')
+    return response.preferences
+  },
+
+  async updatePlanningPreferences(
+    expectedVersion: number,
+    draft: ApiPlanningDraft,
+  ): Promise<ApiPlanningPreferences> {
+    const response = await apiFetch<{ preferences: ApiPlanningPreferences }>('/planning/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({ expectedVersion, ...draft }),
+    })
+    return response.preferences
+  },
+
+  async planningChat(input: {
+    message: string
+    history: ApiPlanningMessage[]
+    locale: 'vi' | 'en'
+    draft: ApiPlanningDraft
+  }): Promise<ApiPlanningChatReply> {
+    const response = await apiFetch<{ reply: ApiPlanningChatReply }>('/planning/chat', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.reply
+  },
+
+  async generatePlan(locale?: 'vi' | 'en'): Promise<ApiPlan> {
     const response = await apiFetch<{ plan: ApiPlan }>('/plans/generate', {
       method: 'POST',
-      body: JSON.stringify({ availableMinutes: 135, coachMode: 'discipline' }),
+      body: JSON.stringify({ availableMinutes: 135, coachMode: 'discipline', locale }),
     })
     return response.plan
   },
@@ -428,10 +516,10 @@ export const prioriApi = {
     return apiFetch('/plans/current')
   },
 
-  async editPlan(plan: ApiPlan, items: NonNullable<ApiPlan['items']>): Promise<ApiPlan> {
+  async editPlan(plan: ApiPlan, items: NonNullable<ApiPlan['items']>, locale?: 'vi' | 'en'): Promise<ApiPlan> {
     const response = await apiFetch<{ plan: ApiPlan }>(`/plans/${plan.id}/proposal`, {
       method: 'PUT',
-      body: JSON.stringify({ expectedVersion: plan.version, items }),
+      body: JSON.stringify({ expectedVersion: plan.version, items, locale }),
     })
     return response.plan
   },
@@ -444,10 +532,10 @@ export const prioriApi = {
     return response.plan
   },
 
-  async createReplan(plan: ApiPlan, friction: 'cannot_start' | 'too_tired' | 'schedule_changed' | 'lost_focus'): Promise<ApiReplanProposal> {
+  async createReplan(plan: ApiPlan, friction: 'cannot_start' | 'too_tired' | 'schedule_changed' | 'lost_focus', locale?: 'vi' | 'en'): Promise<ApiReplanProposal> {
     const response = await apiFetch<{ proposal: ApiReplanProposal }>('/check-ins', {
       method: 'POST',
-      body: JSON.stringify({ planId: plan.id, friction }),
+      body: JSON.stringify({ planId: plan.id, friction, locale }),
     })
     return response.proposal
   },

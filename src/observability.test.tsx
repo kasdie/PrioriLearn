@@ -10,9 +10,11 @@ function BrokenScreen(): never {
 describe('browser observability', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    document.documentElement.lang = 'en'
   })
 
   it('shows a recoverable full-page fallback for a render error', () => {
+    document.documentElement.lang = 'en'
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     render(
       <AppErrorBoundary>
@@ -22,6 +24,19 @@ describe('browser observability', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('We could not open your workspace.')
     expect(screen.getByRole('button', { name: 'Reload application' })).toBeVisible()
+  })
+
+  it('shows the full-page fallback in the active Vietnamese locale', () => {
+    document.documentElement.lang = 'vi'
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    render(
+      <AppErrorBoundary>
+        <BrokenScreen />
+      </AppErrorBoundary>,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Không thể mở không gian học của bạn.')
+    expect(screen.getByRole('button', { name: 'Tải lại ứng dụng' })).toBeVisible()
   })
 
   it('removes browser request content and URL secrets before reporting', () => {

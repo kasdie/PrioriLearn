@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { Course, PriorityAssessment, PriorityFactors, Task } from '../domain/contracts.js'
+import type { Course, Locale, PriorityAssessment, PriorityFactors, Task } from '../domain/contracts.js'
 
 export const PRIORITY_WEIGHTS: PriorityFactors = {
   academicImpact: 0.3,
@@ -21,7 +21,7 @@ function deadlinePressure(dueAt: string | null, now: Date): number {
   return 35
 }
 
-export function assessPriority(task: Task, course: Course, now = new Date()): PriorityAssessment {
+export function assessPriority(task: Task, course: Course, now = new Date(), locale: Locale = 'en'): PriorityAssessment {
   const gradeWeight = task.gradeWeight ?? 5
   const scoreGap = Math.max(0, (course.targetScore ?? 75) - (course.currentScore ?? 70))
   const urgency = deadlinePressure(task.dueAt, now)
@@ -56,18 +56,32 @@ export function assessPriority(task: Task, course: Course, now = new Date()): Pr
       completionProbabilityNow,
       completionProbabilityAfterDelay,
       riskIncreasePercentagePoints: completionProbabilityNow - completionProbabilityAfterDelay,
-      message: `Delaying 48 hours lowers estimated on-time completion from ${completionProbabilityNow}% to ${completionProbabilityAfterDelay}%.`,
+      message: locale === 'vi'
+        ? `Trì hoãn 48 giờ làm mức hoàn thành đúng hạn ước tính giảm từ ${completionProbabilityNow}% xuống ${completionProbabilityAfterDelay}%.`
+        : `Delaying 48 hours lowers estimated on-time completion from ${completionProbabilityNow}% to ${completionProbabilityAfterDelay}%.`,
     },
-    evidence: [
-      `${gradeWeight}% of the course grade`,
-      `${scoreGap.toFixed(0)} point gap to the target score`,
-      task.dueAt ? `Deadline ${task.dueAt}` : 'No confirmed deadline',
-      ...task.evidence,
-    ],
-    assumptions: [
-      'The confirmed grade weight and deadline are accurate.',
-      'Available study time is not interrupted by a new calendar event.',
-    ],
+    evidence: locale === 'vi'
+      ? [
+        `Chiếm ${gradeWeight}% điểm môn học`,
+        `Còn thiếu ${scoreGap.toFixed(0)} điểm so với mục tiêu`,
+        task.dueAt ? `Hạn nộp ${task.dueAt}` : 'Chưa xác nhận hạn nộp',
+        ...task.evidence,
+      ]
+      : [
+        `${gradeWeight}% of the course grade`,
+        `${scoreGap.toFixed(0)} point gap to the target score`,
+        task.dueAt ? `Deadline ${task.dueAt}` : 'No confirmed deadline',
+        ...task.evidence,
+      ],
+    assumptions: locale === 'vi'
+      ? [
+        'Trọng số điểm và hạn nộp đã xác nhận là chính xác.',
+        'Thời gian học chưa bị gián đoạn bởi một sự kiện lịch mới.',
+      ]
+      : [
+        'The confirmed grade weight and deadline are accurate.',
+        'Available study time is not interrupted by a new calendar event.',
+      ],
     uncertainty,
     createdAt: now.toISOString(),
   }

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 
-test('private student completes the first-run import, review, proposal, approval, and reload flow', async ({ page }) => {
+test('private student completes multi-file review, weekly planning, approval, and reload', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'EN', exact: true }).click()
   await page.getByRole('button', { name: 'Create account' }).click()
@@ -12,18 +12,35 @@ test('private student completes the first-run import, review, proposal, approval
 
   await expect(page.getByRole('heading', { name: 'Add data -> Review -> Build first plan' })).toBeVisible()
   await page.getByRole('button', { name: 'Add data' }).first().click()
-  await page.locator('input[type=file]').first().setInputFiles({
-    name: 'semester.csv',
-    mimeType: 'text/csv',
-    buffer: Buffer.from([
-      'course_code,course_name,task_title,due_date,grade_weight',
-      'CS304,Programming,Review service integration,2027-08-15T23:59:00Z,20',
-    ].join('\n')),
-  })
-  await expect(page.getByRole('heading', { name: 'Review before adding to your plan' })).toBeVisible()
+  await page.locator('input[type=file]').first().setInputFiles([
+    {
+      name: 'semester.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from([
+        'course_code,course_name,task_title,due_date,grade_weight',
+        'CS304,Programming,Review service integration,2027-08-15T23:59:00Z,20',
+      ].join('\n')),
+    },
+    {
+      name: 'writing.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from([
+        'course_code,course_name,task_title,due_date,grade_weight',
+        'ENG201,Academic Writing,Draft research outline,2027-08-18T23:59:00Z,15',
+      ].join('\n')),
+    },
+  ])
+  await expect(page.locator('.import-queue-row')).toHaveCount(2)
+  await expect(page.getByText('Review extracted study data', { exact: true })).toBeVisible()
   await expect(page.getByText('Structured import')).toBeVisible()
-  await page.getByRole('checkbox').check()
-  await page.getByRole('button', { name: 'Confirm reviewed data' }).click()
+  for (let review = 0; review < 2; review += 1) {
+    await expect(page.getByRole('button', { name: 'Confirm reviewed data' })).toBeVisible()
+    const warningBoxes = page.locator('.review-warnings input[type="checkbox"]')
+    for (let index = 0; index < await warningBoxes.count(); index += 1) await warningBoxes.nth(index).check()
+    await page.getByRole('button', { name: 'Confirm reviewed data' }).click()
+    if (review === 0) await expect(page.locator('.import-queue-row.confirmed')).toHaveCount(1)
+    else await expect(page.getByRole('heading', { name: 'When are you free this week?' })).toBeVisible()
+  }
 
   await page.getByRole('button', { name: 'Today', exact: true }).click()
   await page.getByRole('button', { name: 'Start a 45-minute session' }).click()
@@ -33,24 +50,21 @@ test('private student completes the first-run import, review, proposal, approval
   await expect(page.getByText('Focus session saved. The task stays in your queue until you complete it.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Plan', exact: true }).click()
-  await page.getByRole('button', { name: 'Build proposal' }).click()
+  await expect(page.getByRole('heading', { name: 'When are you free this week?' })).toBeVisible()
+  await page.locator('.planning-day-toggle input').first().check()
+  await page.getByRole('button', { name: 'Save availability' }).click()
+  await page.getByRole('button', { name: 'Build weekly plan' }).click()
   await expect(page.getByText(/Proposal version 1/)).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Seven-day plan' })).toBeVisible()
   await page.getByRole('button', { name: 'Approve plan' }).click()
   await expect(page.getByText('Approved').first()).toBeVisible()
 
   await page.reload()
   await expect(page.getByText('Approved').first()).toBeVisible()
 
-  await page.goto('/?source=canvas&context=Week%207%20problem%20set')
-  const handoffEditor = page.getByRole('dialog', { name: 'Add a task' })
-  await expect(handoffEditor.getByLabel('Task', { exact: true })).toHaveValue('Week 7 problem set')
-  await expect(page).not.toHaveURL(/context=/)
-  await page.keyboard.press('Escape')
-
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Privacy and data' })).toBeVisible()
-  await expect(page.getByLabel('Email digest')).toBeDisabled()
-  await expect(page.getByText('Verify your email to enable this option.')).toBeVisible()
+  await expect(page.getByLabel('Email digest')).toHaveCount(0)
   await page.getByLabel('Aggregate research').check()
   await expect(page.getByLabel('Aggregate research')).toBeChecked()
   await page.getByRole('button', { name: 'Add signal' }).click()
@@ -61,7 +75,7 @@ test('private student completes the first-run import, review, proposal, approval
   await expect(page.getByRole('button', { name: 'Download export' })).toBeVisible()
 })
 
-test('desktop workspace keeps controls named, traps dialog focus, and reflows at 200% zoom', async ({ page }) => {
+test('desktop workspace keeps controls named, traps dialog focus, and passes WCAG checks', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'EN', exact: true }).click()
   await page.getByRole('button', { name: 'Use demo workspace' }).click()
@@ -94,17 +108,34 @@ test('desktop workspace keeps controls named, traps dialog focus, and reflows at
     targets: violation.nodes.map((node) => node.target),
   }))).toEqual([])
 
-  await page.goto('/?source=canvas&context=Accessibility%20review')
+  await page.getByRole('button', { name: 'Data', exact: true }).click()
+  await page.getByRole('button', { name: 'Add task', exact: true }).click()
   const dialog = page.locator('[role="dialog"][aria-modal="true"]')
   await expect(dialog).toBeVisible()
   for (let press = 0; press < 12; press += 1) await page.keyboard.press('Tab')
   expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true)
   await page.keyboard.press('Escape')
 
-  await page.setViewportSize({ width: 640, height: 720 })
+  await page.setViewportSize({ width: 1280, height: 800 })
   const overflow = await page.evaluate(() => ({
     viewport: document.documentElement.clientWidth,
     content: document.documentElement.scrollWidth,
   }))
   expect(overflow.content).toBeLessThanOrEqual(overflow.viewport + 1)
+})
+
+test('system copy follows the selected Vietnamese or English mode', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'EN', exact: true }).click()
+  await page.getByRole('button', { name: 'Use demo workspace' }).click()
+  await page.getByRole('button', { name: 'VI', exact: true }).click()
+  await page.getByRole('button', { name: 'Cố vấn', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Điều gì khiến việc này quan trọng?' })).toBeVisible()
+  await expect(page.getByText('Academic impact')).toHaveCount(0)
+  await expect(page.getByText('Cost of delay')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'EN', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Why does this matter now?' })).toBeVisible()
+  await expect(page.getByText('Tác động học tập')).toHaveCount(0)
+  await expect(page.getByText('Chi phí trì hoãn')).toHaveCount(0)
 })

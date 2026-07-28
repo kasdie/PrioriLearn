@@ -15,6 +15,24 @@
 - [x] Consent audit, account deletion, lightweight pilot events, MV3 extension package, and sample data.
 - [x] Unit/integration coverage plus lint and production build verification.
 
+## Implementation checkpoint - 2026-07-28
+
+- [x] Accept up to 10 PDF, image, text, CSV, JSON, or JSONL files in one selection and process at most two concurrently, with independent progress, retry, review, and confirmation states.
+- [x] Recover persisted uploads after refresh, including uploaded, extracting, review-required, and failed extraction states.
+- [x] Store versioned planning preferences for timezone, daily study limit, coaching intensity, and recurring free-time windows.
+- [x] Add an AI planning conversation that proposes availability/workload changes without silently saving them or mutating an approved plan.
+- [x] Generate a conflict-aware seven-day plan and render it as a daily board, with session splitting, breaks, daily limits, busy-time exclusion, and IANA timezone/DST handling.
+- [x] Carry the selected locale through extraction, prioritization, planning, plan editing, coaching, authentication, and system-generated UI copy.
+- [x] Verify the slice with unit tests, isolated PostgreSQL integration tests, lint, production build, and desktop Playwright accessibility/E2E tests.
+
+Production rollout for this checkpoint:
+
+1. Apply `server/db/migrations/012_planning_preferences.sql` with the migration-only connection (`DATABASE_MIGRATOR_URL`).
+2. Deploy the Render API, then deploy the Vercel frontend.
+3. Smoke-test Google sign-in, multi-file import/recovery, planning chat, weekly generation/approval/reload, locale switching, and `/api/health` on the stable production aliases.
+
+No new third-party key is required. This slice reuses the existing OpenAI, PostgreSQL, Supabase Storage, Google Sign-In, and Sentry configuration. Outbound email/digests, Google Calendar synchronization, Canvas OAuth/extension handoff, and mobile optimization remain explicitly deferred.
+
 ## Deployment milestones
 
 ### Milestone 1: Durable private alpha
@@ -664,7 +682,7 @@ Synthesized from this design review. Each task derives from a decision recorded 
 ## Demo and submission checklist
 
 - [x] `npm.cmd run lint`, `npm.cmd test`, and `npm.cmd run build` pass.
-- [ ] Before Slice 1 deploy, run `npm run test:postgres` against an isolated `DATABASE_URL_TEST`; it must never reuse the production database URL.
+- [x] Before Slice 1 deploy, run `npm run test:postgres` against an isolated `DATABASE_URL_TEST`; it must never reuse the production database URL.
 - [x] Run the Playwright E2E suite locally across the private workspace and focus-session flow.
 - [ ] After deployment, smoke-test Vercel's relative `/api` rewrite, cookie login, and `/api/health` on the stable production alias.
 - [x] Seeded syllabus, ICS, semester data, and credential-free provider are included.

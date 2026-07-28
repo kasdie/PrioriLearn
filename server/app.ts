@@ -16,6 +16,8 @@ import {
   LearnerProfileUpdateInputSchema,
   PasswordResetConfirmInputSchema,
   PasswordResetRequestInputSchema,
+  PlanningChatInputSchema,
+  PlanningPreferencesUpsertInputSchema,
   PlanApprovalInputSchema,
   PlanEditInputSchema,
   PlanGenerateInputSchema,
@@ -41,7 +43,7 @@ import { InvalidGoogleIdentityError, type GoogleTokenVerifier, verifyGoogleIdTok
 import { parseIcsPreview } from './services/ics.js'
 import { assessPriority } from './services/priority.js'
 import { processLifecycleJobs } from './services/purge.js'
-import { schedulePlan } from './services/scheduler.js'
+import { schedulePlan, scheduleWeeklyPlan } from './services/scheduler.js'
 import { LocalObjectStore, SupabaseObjectStore, type ObjectStore } from './storage.js'
 
 type AuthContext = AuthSession
@@ -590,8 +592,10 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ user: publicUser(user), tenant: await repository.getTenant(user.tenantId) })
   }))
 
-  app.get('/api/dashboard', requireAuth, asyncRoute(async (_request, response) => {
-    const { tenant } = getAuth(response)
+  app.get('/api/dashboard', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
+    const query = parseBody(z.object({ locale: z.enum(['vi', 'en']).optional() }), request.query)
+    const locale = query.locale ?? user.locale
     const courses = await repository.listCourses(tenant.id)
     const courseById = new Map(courses.map((course) => [course.id, course]))
     const ranked = (await repository.listTasks(tenant.id))
@@ -599,7 +603,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       .map((task) => {
         const course = courseById.get(task.courseId)
         if (!course) return undefined
-        return { task, course, assessment: assessPriority(task, course) }
+        return { task, course, assessment: assessPriority(task, course, new Date(), locale) }
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
       .sort((left, right) => right.assessment.score - left.assessment.score)
@@ -612,7 +616,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         task: rankedWindow[0].task,
         course: rankedWindow[0].course,
         assessment: rankedWindow[0].assessment,
-        firstStep: `Open ${rankedWindow[0].task.title} and complete the first concrete requirement.`,
+        firstStep: locale === 'vi'
+          ? `Mở ${rankedWindow[0].task.title} và hoàn thành yêu cầu cụ thể đầu tiên.`
+          : `Open ${rankedWindow[0].task.title} and complete the first concrete requirement.`,
         estimatedMinutes: Math.min(45, rankedWindow[0].task.estimatedMinutes),
       } : null,
     })
@@ -656,13 +662,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }))
 
   app.post('/api/priority-assessments', requireAuth, asyncRoute(async (request, response) => {
-    const { tenant } = getAuth(response)
+    const { user, tenant } = getAuth(response)
     const { taskId } = parseBody(z.object({ taskId: z.string().min(1) }), request.body)
     const task = await repository.getTask(tenant.id, taskId)
     if (!task || task.status !== 'confirmed') throw new ApiError(404, 'TASK_NOT_FOUND', 'Confirmed task was not found.')
     const course = await repository.getCourse(tenant.id, task.courseId)
     if (!course) throw new ApiError(409, 'COURSE_MISSING', 'The task has no available course context.')
-    const assessment = await repository.saveAssessment(assessPriority(task, course))
+    const assessment = await repository.saveAssessment(assessPriority(task, course, new Date(), user.locale))
     response.status(201).json({ assessment })
   }))
 
@@ -798,8 +804,55 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ draft })
   }))
 
-  app.post('/api/plans/generate', requireAuth, asyncRoute(async (request, response) => {
+  app.get('/api/planning/preferences', requireAuth, asyncRoute(async (_request, response) => {
+    const { user, tenant } = getAuth(response)
+    response.json({ preferences: await repository.getPlanningPreferences(tenant.id, user.id) ?? null })
+  }))
+
+  app.put('/api/planning/preferences', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
+    const input = parseBody(PlanningPreferencesUpsertInputSchema, request.body)
+    const { expectedVersion, ...preferencesInput } = input
+    const preferences = await repository.updatePlanningPreferences(
+      tenant.id,
+      user.id,
+      expectedVersion,
+      preferencesInput,
+    )
+    response.json({ preferences })
+  }))
+
+  app.post('/api/planning/chat', requireAuth, asyncRoute(async (request, response) => {
     const { tenant } = getAuth(response)
+    const input = parseBody(PlanningChatInputSchema, request.body)
+    const confirmedTasks = (await repository.listTasks(tenant.id))
+      .filter((task) => task.status === 'confirmed')
+      .slice(0, 50)
+      .map(({ title, dueAt, estimatedMinutes }) => ({ title, dueAt, estimatedMinutes }))
+    const reply = await aiProvider.draftPlanningPreferences({
+      locale: input.locale,
+      message: input.message,
+      history: input.history,
+      draft: input.draft,
+      confirmedTasks,
+    })
+    response.json({
+      reply: {
+        message: reply.message,
+        draft: {
+          ...input.draft,
+          locale: input.locale,
+          coachMode: reply.suggestion.coachMode,
+          dailyMinutes: reply.suggestion.dailyMinutes,
+          windows: reply.suggestion.windows,
+        },
+        missingInformation: reply.missingInformation,
+      },
+    })
+  }))
+
+  app.post('/api/plans/generate', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
     const input = parseBody(PlanGenerateInputSchema, request.body)
     const current = await repository.getCurrentPlan(tenant.id)
     if (current.pending) {
@@ -811,22 +864,34 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       .filter((task) => task.status === 'confirmed')
       .map((task) => {
         const course = courses.get(task.courseId)
-        return course ? { task, assessment: assessPriority(task, course) } : undefined
+        return course ? { task, assessment: assessPriority(task, course, new Date(), input.locale ?? user.locale) } : undefined
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
       .sort((left, right) => right.assessment.score - left.assessment.score)
     const repositoryBusyBlocks = await repository.listAvailabilityBlocks(tenant.id)
-    const items = schedulePlan({
-      rankedTasks,
-      startsAt: input.startsAt,
-      availableMinutes: input.availableMinutes,
-      coachMode: input.coachMode,
-      busyBlocks: [...repositoryBusyBlocks, ...input.busyBlocks],
-    })
+    const planningPreferences = await repository.getPlanningPreferences(tenant.id, user.id)
+    const busyBlocks = [...repositoryBusyBlocks, ...input.busyBlocks]
+    const items = planningPreferences?.windows.length
+      ? scheduleWeeklyPlan({
+        rankedTasks,
+        startsAt: input.startsAt,
+        preferences: { ...planningPreferences, locale: input.locale ?? planningPreferences.locale },
+        busyBlocks,
+      })
+      : schedulePlan({
+        rankedTasks,
+        startsAt: input.startsAt,
+        availableMinutes: input.availableMinutes,
+        coachMode: input.coachMode,
+        busyBlocks,
+        locale: input.locale ?? user.locale,
+      })
     if (items.length === 0) throw new ApiError(409, 'NO_SCHEDULABLE_TASKS', 'No confirmed tasks fit the available time.')
     const plan = await repository.createPlanProposal(tenant.id, {
       items,
-      rationale: `A ${input.coachMode} plan ranked by academic impact, failure risk, cost of delay, goal alignment, and actionability.`,
+      rationale: input.locale === 'vi' || (!input.locale && user.locale === 'vi')
+        ? `Kế hoạch ${planningPreferences?.coachMode ?? input.coachMode} được xếp theo tác động học tập, rủi ro, chi phí trì hoãn, mục tiêu và khả năng bắt đầu.`
+        : `A ${planningPreferences?.coachMode ?? input.coachMode} plan ranked by academic impact, failure risk, cost of delay, goal alignment, and actionability.`,
       previousPlanId: current.active?.id,
     })
     response.status(201).json({ plan, requiresApproval: true })
@@ -838,7 +903,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }))
 
   app.put('/api/plans/:planId/proposal', requireAuth, asyncRoute(async (request, response) => {
-    const { tenant } = getAuth(response)
+    const { user, tenant } = getAuth(response)
     const input = parseBody(PlanEditInputSchema, request.body)
     const plan = await repository.replacePlanProposal(
       tenant.id,
@@ -846,7 +911,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       input.expectedVersion,
       {
         items: input.items.map((item) => ({ ...item, id: item.id ?? randomUUID() })),
-        rationale: 'Student-edited proposal with schedule and order validation.',
+        rationale: input.locale === 'vi' || (!input.locale && user.locale === 'vi')
+          ? 'Đề xuất do sinh viên chỉnh sửa, đã kiểm tra thời gian và thứ tự.'
+          : 'Student-edited proposal with schedule and order validation.',
       },
     )
     response.status(201).json({ plan, requiresApproval: true })
@@ -883,6 +950,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       note: input.note,
       plan,
       learnerSignals: learnerProfile?.approvedSignals,
+      locale: input.locale ?? user.locale,
     })
     const proposedItems = plan.items.map((item, index) => {
       if (index !== 0) return item
@@ -999,7 +1067,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
 
   app.get('/api/account/export', requireAuth, asyncRoute(async (_request, response) => {
     const { user, tenant } = getAuth(response)
-    const [courses, tasks, documents, availabilityBlocks, plans, consents, learnerProfile] = await Promise.all([
+    const [courses, tasks, documents, availabilityBlocks, plans, consents, learnerProfile, planningPreferences] = await Promise.all([
       repository.listCourses(tenant.id),
       repository.listTasks(tenant.id),
       repository.listDocuments(tenant.id),
@@ -1007,6 +1075,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       repository.listPlans(tenant.id),
       repository.listConsents(tenant.id),
       repository.getLearnerProfile(tenant.id, user.id),
+      repository.getPlanningPreferences(tenant.id, user.id),
     ])
     const sourceDocuments = documents.map(({ storageKey: _storageKey, idempotencyKey: _idempotencyKey, ...document }) => document)
     response.setHeader('Content-Disposition', `attachment; filename="priorilearn-export-${new Date().toISOString().slice(0, 10)}.json"`)
@@ -1022,6 +1091,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       plans,
       consents,
       learnerProfile: publicLearnerProfile(learnerProfile),
+      planningPreferences: planningPreferences ?? null,
     })
   }))
 

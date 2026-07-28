@@ -125,6 +125,54 @@ export type AvailabilityBlock = {
   createdAt: string
 }
 
+export const StudyWindowSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startMinute: z.number().int().min(0).max(1435),
+  endMinute: z.number().int().min(5).max(1440),
+}).refine((window) => window.endMinute > window.startMinute, {
+  message: 'A study window must end after it starts.',
+})
+
+export const StudyWindowsSchema = z.array(StudyWindowSchema).max(28).superRefine((windows, context) => {
+  const byDay = new Map<number, Array<{ startMinute: number; endMinute: number; index: number }>>()
+  windows.forEach((window, index) => {
+    const day = byDay.get(window.dayOfWeek) ?? []
+    day.push({ ...window, index })
+    byDay.set(window.dayOfWeek, day)
+  })
+  for (const day of byDay.values()) {
+    day.sort((left, right) => left.startMinute - right.startMinute)
+    for (let index = 1; index < day.length; index += 1) {
+      const previous = day[index - 1]
+      const current = day[index]
+      if (previous && current && current.startMinute < previous.endMinute) {
+        context.addIssue({
+          code: 'custom',
+          path: [current.index],
+          message: 'Study windows on the same day cannot overlap.',
+        })
+      }
+    }
+  }
+})
+
+export type StudyWindow = z.infer<typeof StudyWindowSchema>
+
+export type PlanningPreferences = {
+  id: string
+  tenantId: string
+  userId: string
+  locale: Locale
+  coachMode: CoachMode
+  dailyMinutes: number
+  timezone: string
+  utcOffsetMinutes: number
+  windows: StudyWindow[]
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
 export const ExtractedCourseSchema = z.object({
   code: z.string(),
   name: z.string(),
@@ -360,6 +408,7 @@ export const PlanGenerateInputSchema = z.object({
   startsAt: z.string().optional(),
   availableMinutes: z.number().int().min(15).max(720).default(135),
   coachMode: CoachModeSchema.default('discipline'),
+  locale: LocaleSchema.optional(),
   busyBlocks: z.array(z.object({
     title: z.string().default('Busy'),
     startsAt: z.string(),
@@ -386,13 +435,57 @@ export const PlanItemEditSchema = z.object({
 export const PlanEditInputSchema = z.object({
   expectedVersion: z.number().int().positive(),
   items: z.array(PlanItemEditSchema).min(1).max(100),
+  locale: LocaleSchema.optional(),
 })
 
 export const CheckInInputSchema = z.object({
   planId: z.string().min(1),
   friction: z.enum(['cannot_start', 'too_tired', 'schedule_changed', 'lost_focus']),
   note: z.string().max(1000).optional(),
+  locale: LocaleSchema.optional(),
 })
+
+export const PlanningPreferenceDraftSchema = z.object({
+  locale: LocaleSchema,
+  coachMode: CoachModeSchema,
+  dailyMinutes: z.number().int().min(15).max(480),
+  timezone: z.string().trim().min(1).max(80),
+  utcOffsetMinutes: z.number().int().min(-840).max(840),
+  windows: StudyWindowsSchema,
+})
+
+export const PlanningPreferencesUpsertInputSchema = PlanningPreferenceDraftSchema.extend({
+  expectedVersion: z.number().int().min(0),
+}).superRefine((input, context) => {
+  if (input.windows.length === 0) {
+    context.addIssue({ code: 'custom', path: ['windows'], message: 'Choose at least one free study window.' })
+  }
+})
+
+export const PlanningChatMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  content: z.string().trim().min(1).max(2000),
+})
+
+export const PlanningChatInputSchema = z.object({
+  message: z.string().trim().min(1).max(2000),
+  history: z.array(PlanningChatMessageSchema).max(12).default([]),
+  locale: LocaleSchema,
+  draft: PlanningPreferenceDraftSchema,
+})
+
+export const PlanningAssistantReplySchema = z.object({
+  message: z.string().trim().min(1).max(3000),
+  suggestion: z.object({
+    coachMode: CoachModeSchema,
+    dailyMinutes: z.number().int().min(15).max(480),
+    windows: StudyWindowsSchema,
+  }),
+  missingInformation: z.array(z.enum(['availability', 'intensity'])).max(2),
+})
+
+export type PlanningPreferenceDraft = z.infer<typeof PlanningPreferenceDraftSchema>
+export type PlanningAssistantReply = z.infer<typeof PlanningAssistantReplySchema>
 
 export const ReplanApprovalInputSchema = z.object({
   expectedPlanVersion: z.number().int().positive(),
