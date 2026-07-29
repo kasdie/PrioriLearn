@@ -143,3 +143,81 @@ test('system copy follows the selected Vietnamese or English mode', async ({ pag
   await expect(page.getByText('Tác động học tập')).toHaveCount(0)
   await expect(page.getByText('Chi phí trì hoãn')).toHaveCount(0)
 })
+
+test('an expired session keeps the current-tab task draft through sign-in', async ({ page }) => {
+  const email = `session-draft-${Date.now()}@example.test`
+  const password = 'private-e2e-password'
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'EN', exact: true }).click()
+  await page.getByRole('button', { name: 'Create account' }).click()
+  await page.getByLabel('Your name').fill('Session Draft Student')
+  await page.getByLabel('Email').fill(email)
+  await page.locator('input[type="password"]').fill(password)
+  await page.getByRole('button', { name: 'Create account' }).last().click()
+
+  await page.getByRole('button', { name: 'Data', exact: true }).click()
+  await page.getByRole('button', { name: 'Add task', exact: true }).click()
+  await page.getByLabel('Course code').fill('BIO202')
+  await page.getByLabel('Course name').fill('Biology')
+  await page.getByLabel('Task', { exact: true }).fill('Keep this draft after re-authentication')
+
+  const logoutStatus = await page.evaluate(async () => {
+    const response = await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    return response.status
+  })
+  expect(logoutStatus).toBe(204)
+
+  await page.getByRole('button', { name: 'Add task', exact: true }).last().click()
+  await expect(page.getByText('Your session expired. Sign in again to continue the current draft.')).toBeVisible()
+  await page.getByLabel('Email').fill(email)
+  await page.locator('input[type="password"]').fill(password)
+  await page.getByRole('button', { name: 'Sign in', exact: true }).last().click()
+
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await expect(page.getByLabel('Course code')).toHaveValue('BIO202')
+  await expect(page.getByLabel('Course name')).toHaveValue('Biology')
+  await expect(page.getByLabel('Task', { exact: true })).toHaveValue('Keep this draft after re-authentication')
+})
+
+test('a failed upload remains visible and succeeds when retried', async ({ page }) => {
+  let failedUpload = false
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'EN', exact: true }).click()
+  await page.getByRole('button', { name: 'Use demo workspace' }).click()
+  await page.getByRole('button', { name: 'Data', exact: true }).click()
+  await page.route('**/api/documents', async (route) => {
+    if (route.request().method() === 'POST' && !failedUpload) {
+      failedUpload = true
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'UPLOAD_FAILED', message: 'Temporary upload failure.' } }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.getByRole('button', { name: 'Upload study files' }).click()
+  await page.locator('input[type=file]').first().setInputFiles({
+    name: 'retry.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from([
+      'course_code,course_name,task_title,due_date,grade_weight',
+      'MAT210,Discrete Mathematics,Retry import workflow,2027-08-20T23:59:00Z,10',
+    ].join('\n')),
+  })
+
+  await expect(page.locator('.import-queue-row.error')).toContainText('retry.csv')
+  await expect(page.getByText('Needs retry', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Retry', exact: true }).click()
+
+  await expect(page.getByText('Review extracted study data', { exact: true })).toBeVisible()
+  await expect(page.locator('.import-queue-row.review')).toContainText('retry.csv')
+})

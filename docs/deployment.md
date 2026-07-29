@@ -70,6 +70,7 @@ The memory driver always uses local object storage, even when Supabase variables
 - Keep `STRUCTURED_LOGS=true` on Render. Every API response carries `X-Request-Id`; request completion and server errors are emitted as single-line JSON without request bodies, cookies, or credentials.
 - Browser sessions are host-only `HttpOnly; SameSite=Lax; Secure` cookies. Private API responses use `Cache-Control: private, no-store`.
 - Preview aliases are not trusted write origins unless Render is deliberately configured for that exact preview. Use the stable production alias for private-alpha testing.
+- Run the deployed desktop/accessibility smoke with `PRIORILEARN_E2E_BASE_URL=https://priori-learn-kasdies-projects.vercel.app npm run test:e2e -- --grep "desktop workspace"` (set the variable with `$env:` first in PowerShell).
 
 ## Hosted Error Reporting
 

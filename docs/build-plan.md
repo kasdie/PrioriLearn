@@ -658,7 +658,7 @@ Synthesized from this design review. Each task derives from a decision recorded 
   - Surfaced by: Engineering test review - current API and purge tests use `InMemoryRepository`, so they cannot exercise forced RLS, transaction locks, partial indexes, or persisted lifecycle jobs.
   - Files: `package.json`, `docker-compose.yml` or a dedicated test compose file, `server/test/postgres.ts`, `server/**/*.integration.test.ts`, `.env.example`, CI/deployment documentation.
   - Verify: `npm run test:postgres` requires `DATABASE_URL_TEST`, refuses a production-looking URL, creates isolated test state, applies migrations, and covers RLS missing/wrong-tenant rejection, concurrent plan transitions, lifecycle retry/idempotency, and cookie-session logout.
-- [ ] **T18 (P1, human: ~5h / CC: ~1h)** - browser E2E and production smoke gate - Exercise the private workspace across the real browser/API boundary and verify the deployed Vercel rewrite.
+- [x] **T18 (P1, human: ~5h / CC: ~1h)** - browser E2E and production smoke gate - Exercise the private workspace across the real browser/API boundary and verify the deployed Vercel rewrite.
   - Surfaced by: Engineering test review - cookie auth, import confirmation, plan approval, and post-reload state cross frontend, API, and storage boundaries that component and repository tests cannot cover together.
   - Files: `e2e/`, `playwright.config.ts`, `package.json`, local test-server configuration, deployment documentation.
   - Verify: Playwright runs `register -> empty Today -> upload -> review -> confirm -> generate -> edit -> approve -> reload` with deterministic local dependencies; it covers session-expired draft recovery and import retry; the post-deploy smoke confirms relative `/api` rewrite, cookie login, and health against the stable Vercel alias.
@@ -673,26 +673,26 @@ Synthesized from this design review. Each task derives from a decision recorded 
 | Calendar conflict | Yes | Session starts after the busy block |
 | Nhẹ/Tập trung/Kỷ luật | Yes | Session cap is 20/35/45 minutes |
 | Cross-tenant task access | Yes | HTTP 404 with no data disclosure |
-| RLS auth bootstrap | No | Login/session restoration can resolve only its supplied email or token hash; it cannot read an unrelated user, tenant, or session |
+| RLS auth bootstrap | Yes | Login/session restoration can resolve only its supplied email or token hash; it cannot read an unrelated user, tenant, or session |
 | Account session lifecycle | Yes | Registration is tenant-private; logout immediately revokes the token |
-| Browser session transport | No | Production auth uses a host-only HttpOnly cookie through relative `/api`; no session token remains in browser storage or API JSON |
-| Cross-origin write / private caching | No | Render rejects an untrusted write origin; private API responses are `no-store` and never cached by the Vercel rewrite |
-| Frontend trust-state regression | No | Component tests prove a failed import/generate/approve cannot render a confirmed state; re-auth retains only the in-memory current-tab draft |
-| Private workspace E2E | No | A browser test completes the real first-run/import/proposal/approval/reload flow and covers session-expired draft recovery plus retry UI |
-| PostgreSQL production guarantees | No | A separate `DATABASE_URL_TEST` lane applies migrations and proves forced RLS, plan concurrency, lifecycle retry, and session revocation against PostgreSQL |
-| RLS deployment rollout | No | Additive schema, tenant-aware API, restricted runtime role, and `FORCE RLS` are applied in order; each phase passes a production smoke check before the next |
+| Browser session transport | Yes | Production auth uses a host-only HttpOnly cookie through relative `/api`; no session token remains in browser storage or API JSON |
+| Cross-origin write / private caching | Yes | Render rejects an untrusted write origin; private API responses are `no-store` and never cached by the Vercel rewrite |
+| Frontend trust-state regression | Yes | Component tests prove a failed import/generate/approve cannot render a confirmed state; re-auth retains only the in-memory current-tab draft |
+| Private workspace E2E | Yes | A browser test completes the real first-run/import/proposal/approval/reload flow and covers session-expired draft recovery plus retry UI |
+| PostgreSQL production guarantees | Yes | A separate `DATABASE_URL_TEST` lane applies migrations and proves forced RLS, plan concurrency, lifecycle retry, and session revocation against PostgreSQL |
+| RLS deployment rollout | Yes | Additive schema, tenant-aware API, restricted runtime role, and `FORCE RLS` are applied in order; each phase passes a production smoke check before the next |
 | Repeated auth attempts | Yes | HTTP 429 with `Retry-After` after the configured limit |
 | Expired raw document | Yes | Object and metadata are deleted |
 | ICS import | Yes | Draft first, persistence only after confirmation |
-| Failed import/plan request | No | Draft stays visible; inline recovery appears; no local-success state |
-| Partial dashboard data | No | Confirmed panels remain visible; recommendation/focus are disabled until required inputs recover |
-| First private workspace | No | Guided `Add data -> Review -> Build first plan` path; no false active-plan claims |
-| Plan version edit/conflict | No | Pre-approval changes create a proposal version; approved plans remain immutable |
-| Concurrent plan transition | No | A tenant has at most one active and one pending plan; concurrent generate/edit/approve requests either serialize or return recoverable `409` without losing a plan |
-| Bounded real-data reads | No | Current-plan lookup uses a bounded set-based query; task/data collections paginate at 50 by default and 100 maximum without an unbounded client-side history fetch |
-| Extraction confidence review | No | Required invalid fields block confirmation; nullable uncertainty becomes explicit Unknown |
-| Permission revoke/account delete | Partial | Purpose-specific revoke does not break other workflows; deletion receipt reflects actual cleanup state |
-| Scheduled lifecycle dispatch | No | Vercel Cron reaches only its protected function; a hardened bounded claim leases due queue jobs; a missed/failed run or expired lease leaves work eligible for the next daily retry |
+| Failed import/plan request | Yes | Draft stays visible; inline recovery appears; no local-success state |
+| Partial dashboard data | Yes | Confirmed panels remain visible; recommendation/focus are disabled until required inputs recover |
+| First private workspace | Yes | Guided `Add data -> Review -> Build first plan` path; no false active-plan claims |
+| Plan version edit/conflict | Yes | Pre-approval changes create a proposal version; approved plans remain immutable |
+| Concurrent plan transition | Yes | A tenant has at most one active and one pending plan; concurrent generate/edit/approve requests either serialize or return recoverable `409` without losing a plan |
+| Bounded real-data reads | Yes | Current-plan lookup uses a bounded set-based query; task/data collections paginate at 50 by default and 100 maximum without an unbounded client-side history fetch |
+| Extraction confidence review | Yes | Required invalid fields block confirmation; nullable uncertainty becomes explicit Unknown |
+| Permission revoke/account delete | Yes | Purpose-specific revoke does not break other workflows; deletion receipt reflects actual cleanup state |
+| Scheduled lifecycle dispatch | Yes | Vercel Cron reaches only its protected function; a hardened bounded claim leases due queue jobs; a missed/failed run or expired lease leaves work eligible for the next daily retry |
 | Desktop accessibility | Manual | Keyboard-only task flow, WCAG AA contrast, modal focus restoration, and 200% zoom reflow |
 | Connector denial/revocation | Partial | Fallback remains available; full OAuth tests before alpha |
 | Bilingual desktop UI | Manual | Vietnamese/English text is readable with no clipping, overlap, or meaning loss on supported desktop viewports and 200% zoom |
@@ -703,11 +703,11 @@ Synthesized from this design review. Each task derives from a decision recorded 
 - [x] `npm.cmd run lint`, `npm.cmd test`, and `npm.cmd run build` pass.
 - [x] Before Slice 1 deploy, run `npm run test:postgres` against an isolated `DATABASE_URL_TEST`; it must never reuse the production database URL.
 - [x] Run the Playwright E2E suite locally across the private workspace and focus-session flow.
-- [ ] After deployment, smoke-test Vercel's relative `/api` rewrite, cookie login, and `/api/health` on the stable production alias.
+- [x] After deployment, smoke-test Vercel's relative `/api` rewrite, cookie login, and `/api/health` on the stable production alias.
 - [x] Seeded syllabus, ICS, semester data, and credential-free provider are included.
-- [ ] Verify desktop flows in the final deployed build; mobile is explicitly deferred for the private alpha.
+- [x] Verify desktop flows in the final deployed build; mobile is explicitly deferred for the private alpha.
 - [ ] Record and publish a video under three minutes.
-- [ ] Publish the repository and hosted demo URL.
+- [x] Publish the repository and hosted demo URL.
 - [ ] Add final Codex session evidence and Devpost fields.
 
 ## GSTACK REVIEW REPORT

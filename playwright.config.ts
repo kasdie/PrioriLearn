@@ -6,7 +6,10 @@ const apiCommand = process.platform === 'win32'
 const webCommand = process.platform === 'win32'
   ? 'node_modules\\.bin\\vite.cmd --host 127.0.0.1'
   : './node_modules/.bin/vite --host 127.0.0.1'
-const useExternalServers = process.env.PRIORILEARN_E2E_EXTERNAL_SERVERS === 'true' || process.platform === 'win32'
+const baseURL = process.env.PRIORILEARN_E2E_BASE_URL ?? 'http://127.0.0.1:4173'
+const useExternalServers = Boolean(process.env.PRIORILEARN_E2E_BASE_URL)
+  || process.env.PRIORILEARN_E2E_EXTERNAL_SERVERS === 'true'
+  || process.platform === 'win32'
 
 export default defineConfig({
   testDir: './e2e',
@@ -14,7 +17,7 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL,
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
