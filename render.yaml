@@ -24,7 +24,7 @@ services:
       - key: EXTRACTION_WORKER_BATCH_SIZE
         value: "2"
       - key: APP_ORIGIN
-        sync: false
+        value: https://priori-learn-kasdies-projects.vercel.app
       - key: ENFORCE_ORIGIN_CHECK
         value: true
       - key: SESSION_COOKIE_SECURE

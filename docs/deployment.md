@@ -66,7 +66,7 @@ The memory driver always uses local object storage, even when Supabase variables
 - Add the same OAuth client ID as `GOOGLE_CLIENT_ID` in Render. The API verifies every Google ID token; it does not use a Google client secret or request Calendar scopes.
 - In Google Cloud, add the stable Vercel origin to **Authorized JavaScript origins**. Do not add a redirect URI for this popup-based sign-in flow.
 - Vercel Functions under `api/` take filesystem precedence; the rewrite also excludes `/api/cron/daily` explicitly.
-- Render must set `APP_ORIGIN` to the stable Vercel production alias, `ENFORCE_ORIGIN_CHECK=true`, and `SESSION_COOKIE_SECURE=true`.
+- Render sets `APP_ORIGIN=https://priori-learn-kasdies-projects.vercel.app` from `render.yaml`; keep `ENFORCE_ORIGIN_CHECK=true` and `SESSION_COOKIE_SECURE=true`. Update both the Blueprint and Render together before moving to a custom domain.
 - Keep `STRUCTURED_LOGS=true` on Render. Every API response carries `X-Request-Id`; request completion and server errors are emitted as single-line JSON without request bodies, cookies, or credentials.
 - Browser sessions are host-only `HttpOnly; SameSite=Lax; Secure` cookies. Private API responses use `Cache-Control: private, no-store`.
 - Preview aliases are not trusted write origins unless Render is deliberately configured for that exact preview. Use the stable production alias for private-alpha testing.

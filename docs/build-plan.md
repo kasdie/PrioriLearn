@@ -48,7 +48,7 @@ Production rollout for this checkpoint:
 
 1. Apply `server/db/migrations/013_plan_integrity_and_warnings.sql` with `DATABASE_MIGRATOR_URL` before deploying the API.
 2. Deploy Render and Vercel from the same `main` commit.
-3. Smoke-test `/api/health`, cookie session restore, multi-file import, planning chat, weekly proposal/rebuild/approval, and VI/EN persistence through `https://priorilearn-omega.vercel.app`.
+3. Smoke-test `/api/health`, cookie session restore, multi-file import, planning chat, weekly proposal/rebuild/approval, and VI/EN persistence through `https://priori-learn-kasdies-projects.vercel.app`.
 
 No new required environment variable or third-party key was introduced. `AI_RATE_LIMIT_MAX` and `AI_RATE_LIMIT_WINDOW_MS` are optional production tuning values with safe defaults. Outbound email/digests, Google Calendar synchronization, Canvas OAuth/extension handoff, mobile optimization, and the recorded restore drill remain deferred.
 
