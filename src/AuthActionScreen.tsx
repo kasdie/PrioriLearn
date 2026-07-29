@@ -34,7 +34,7 @@ function actionError(error: unknown, locale: 'vi' | 'en'): string {
         ? 'Mật khẩu phải có từ 8 đến 128 ký tự.'
         : 'The password must be between 8 and 128 characters.'
     }
-    return error.message
+    return locale === 'vi' ? 'Không thể hoàn tất yêu cầu này. Vui lòng thử lại.' : error.message
   }
   return locale === 'vi'
     ? 'Không thể kết nối tới PrioriLearn. Vui lòng thử lại.'

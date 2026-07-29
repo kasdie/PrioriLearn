@@ -12,6 +12,8 @@ export type AppConfig = {
   appOrigin: string
   authRateLimitMax: number
   authRateLimitWindowMs: number
+  aiRateLimitMax: number
+  aiRateLimitWindowMs: number
   sessionCookieName: string
   sessionCookieSecure: boolean
   enforceOriginCheck: boolean
@@ -40,6 +42,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const persistenceDriver = process.env.PERSISTENCE_DRIVER === 'postgres' ? 'postgres' : 'memory'
   const authRateLimitMax = Number(process.env.AUTH_RATE_LIMIT_MAX ?? 10)
   const authRateLimitWindowMs = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 15 * 60_000)
+  const aiRateLimitMax = Number(process.env.AI_RATE_LIMIT_MAX ?? 30)
+  const aiRateLimitWindowMs = Number(process.env.AI_RATE_LIMIT_WINDOW_MS ?? 60 * 60_000)
   const appOrigin = process.env.APP_ORIGIN ?? 'http://127.0.0.1:4173'
   const sessionCookieSecure = process.env.SESSION_COOKIE_SECURE
     ? process.env.SESSION_COOKIE_SECURE === 'true'
@@ -58,6 +62,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     appOrigin,
     authRateLimitMax: Number.isInteger(authRateLimitMax) && authRateLimitMax > 0 ? authRateLimitMax : 10,
     authRateLimitWindowMs: Number.isInteger(authRateLimitWindowMs) && authRateLimitWindowMs > 0 ? authRateLimitWindowMs : 15 * 60_000,
+    aiRateLimitMax: Number.isInteger(aiRateLimitMax) && aiRateLimitMax > 0 ? aiRateLimitMax : 30,
+    aiRateLimitWindowMs: Number.isInteger(aiRateLimitWindowMs) && aiRateLimitWindowMs > 0 ? aiRateLimitWindowMs : 60 * 60_000,
     sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'priorilearn_session',
     sessionCookieSecure,
     enforceOriginCheck,

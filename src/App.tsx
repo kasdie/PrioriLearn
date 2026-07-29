@@ -20,7 +20,6 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogOut,
-  MailCheck,
   Play,
   Plus,
   Settings2,
@@ -43,7 +42,7 @@ import { usePlanFlow } from './features/plan/usePlanFlow'
 import { PlanningAssistant } from './features/planning/PlanningAssistant'
 import { WeeklyPlanBoard } from './features/planning/WeeklyPlanBoard'
 import { useSession } from './features/session/useSession'
-import { ApiClientError, prioriApi, type ApiConsent, type ApiCourse, type ApiDashboard, type ApiLearnerProfile, type ApiLearnerSignal, type ApiMetrics, type ApiPlanningPreferences, type ApiReplanProposal, type ApiSession, type ApiSourceDocument, type ApiTask } from './lib/api'
+import { ApiClientError, prioriApi, userFacingError, type ApiAvailabilityBlock, type ApiConsent, type ApiCourse, type ApiDashboard, type ApiLearnerProfile, type ApiLearnerSignal, type ApiMetrics, type ApiPlanningPreferences, type ApiReplanProposal, type ApiSession, type ApiSourceDocument, type ApiTask } from './lib/api'
 import './App.css'
 
 type Locale = 'vi' | 'en'
@@ -63,10 +62,10 @@ const copy = {
     approve: 'Duyệt kế hoạch',
     approved: 'Đã duyệt',
     stuck: 'Mình đang bị kẹt',
-    checkin: 'Check-in với Priori',
+    checkin: 'Trao đổi với Priori',
     import: 'Thêm dữ liệu',
     focus: 'Phiên tập trung',
-    assistant: 'Priori Agent',
+    assistant: 'Trợ lý Priori',
     settings: 'Cài đặt',
   },
   en: {
@@ -179,11 +178,12 @@ function App() {
   const [exportBusy, setExportBusy] = useState(false)
   const [deletionConfirmation, setDeletionConfirmation] = useState('')
   const [deletionBusy, setDeletionBusy] = useState(false)
-  const [verificationBusy, setVerificationBusy] = useState(false)
   const [sourceDocuments, setSourceDocuments] = useState<ApiSourceDocument[]>([])
+  const [sourceDocumentsNextCursor, setSourceDocumentsNextCursor] = useState<string | undefined>()
   const [sourceDocumentsBusy, setSourceDocumentsBusy] = useState(false)
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null)
   const [planningPreferences, setPlanningPreferences] = useState<ApiPlanningPreferences | null>(null)
+  const [availabilityBlocks, setAvailabilityBlocks] = useState<ApiAvailabilityBlock[]>([])
   const documentInputRef = useRef<HTMLInputElement>(null)
   const calendarInputRef = useRef<HTMLInputElement>(null)
   const accountMenuRef = useRef<HTMLDivElement>(null)
@@ -222,6 +222,7 @@ function App() {
     setDashboard(nextDashboard)
     setCourses(taskData.courses)
     setTasks(taskData.tasks)
+    setAvailabilityBlocks(taskData.availabilityBlocks)
     setMetrics(nextMetrics)
     setPlanningPreferences(nextPlanningPreferences)
     setWorkspaceError(null)
@@ -233,12 +234,27 @@ function App() {
     try {
       const response = await prioriApi.documents(undefined, 50)
       setSourceDocuments(response.documents)
+      setSourceDocumentsNextCursor(response.nextCursor)
     } catch (error) {
-      setToast(error instanceof Error ? error.message : (locale === 'vi' ? 'Chưa thể tải danh sách tệp.' : 'Could not load your files.'))
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Chưa thể tải danh sách tệp.' : 'Could not load your files.'))
     } finally {
       setSourceDocumentsBusy(false)
     }
   }, [locale])
+
+  const loadMoreSourceDocuments = async () => {
+    if (!sourceDocumentsNextCursor || sourceDocumentsBusy) return
+    setSourceDocumentsBusy(true)
+    try {
+      const response = await prioriApi.documents(sourceDocumentsNextCursor, 50)
+      setSourceDocuments((current) => [...current, ...response.documents.filter((document) => !current.some((item) => item.id === document.id))])
+      setSourceDocumentsNextCursor(response.nextCursor)
+    } catch {
+      setToast(locale === 'vi' ? 'Chưa thể tải thêm tệp.' : 'Could not load more files.')
+    } finally {
+      setSourceDocumentsBusy(false)
+    }
+  }
 
   const retryWorkspace = async () => {
     setDashboardBusy(true)
@@ -263,7 +279,7 @@ function App() {
       setConsents(nextConsents)
       setLearnerProfile(nextLearnerProfile)
     } catch (error) {
-      setToast(error instanceof Error ? error.message : (locale === 'vi' ? 'Không thể tải các quyền dữ liệu.' : 'Could not load your data permissions.'))
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Không thể tải các quyền dữ liệu.' : 'Could not load your data permissions.'))
     } finally {
       setSettingsBusy(false)
     }
@@ -271,6 +287,12 @@ function App() {
 
   const planFlow = usePlanFlow(prioriApi, locale)
   const { plan: apiPlan, approved: planApproved, busy: planBusy, replacePlan } = planFlow
+  const planWarnings = apiPlan?.schedulingWarnings ?? []
+  const newlyConfirmedTasks = useMemo(() => {
+    if (!apiPlan?.createdAt) return []
+    const planCreatedAt = Date.parse(apiPlan.createdAt)
+    return tasks.filter((task) => task.status === 'confirmed' && task.createdAt && Date.parse(task.createdAt) > planCreatedAt)
+  }, [apiPlan?.createdAt, tasks])
   const importFlow = useImportFlow({
     locale,
     onConfirmed: async () => {
@@ -300,27 +322,14 @@ function App() {
     setAuthAction(null)
   }
 
-  const requestEmailVerification = async () => {
-    if (verificationBusy) return
-    setVerificationBusy(true)
-    try {
-      await prioriApi.requestEmailVerification()
-      setToast(locale === 'vi'
-        ? 'Đã gửi liên kết xác minh. Hãy kiểm tra hộp thư của bạn.'
-        : 'Verification link sent. Check your inbox.')
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Could not send the verification email.')
-    } finally {
-      setVerificationBusy(false)
-    }
-  }
-
   const clearWorkspace = () => {
     setDashboard(null)
     setMetrics({})
     setCourses([])
     setTasks([])
+    setAvailabilityBlocks([])
     setSourceDocuments([])
+    setSourceDocumentsNextCursor(undefined)
     setPlanningPreferences(null)
     setWorkspaceError(null)
     setConsents([])
@@ -447,13 +456,13 @@ function App() {
       setFocusOpen(false)
       setToast(locale === 'vi'
         ? elapsedMinutes > 0
-          ? `Đã lưu ${elapsedMinutes} phút tập trung. Task vẫn ở hàng đợi cho đến khi bạn hoàn tất.`
-          : 'Đã lưu phiên tập trung. Task vẫn ở hàng đợi cho đến khi bạn hoàn tất.'
+          ? `Đã lưu ${elapsedMinutes} phút tập trung. Nhiệm vụ vẫn ở hàng đợi cho đến khi bạn hoàn tất.`
+          : 'Đã lưu phiên tập trung. Nhiệm vụ vẫn ở hàng đợi cho đến khi bạn hoàn tất.'
         : elapsedMinutes > 0
           ? `${elapsedMinutes} focused minutes saved. The task stays in your queue until you complete it.`
           : 'Focus session saved. The task stays in your queue until you complete it.')
     } catch (error) {
-      setFocusError(error instanceof Error ? error.message : 'The focus session was not saved. Your task remains unchanged.')
+      setFocusError(userFacingError(error, locale, locale === 'vi' ? 'Chưa lưu được phiên tập trung. Nhiệm vụ vẫn giữ nguyên.' : 'The focus session was not saved. Your task remains unchanged.'))
     } finally {
       setFocusBusy(false)
     }
@@ -486,7 +495,7 @@ function App() {
         ? `Đã hoàn tất ${recommendation.task.title}. Rủi ro trì hoãn ${recommendation.assessment.costOfDelay.delayHours} giờ đã được loại khỏi hàng đợi.`
         : `${recommendation.task.title} completed. Its ${recommendation.assessment.costOfDelay.delayHours}-hour delay risk is out of the active queue.`)
     } catch (error) {
-      setFocusError(error instanceof Error ? error.message : 'The task was not completed. Your current task and plan remain safe.')
+      setFocusError(userFacingError(error, locale, locale === 'vi' ? 'Chưa thể hoàn tất nhiệm vụ. Kế hoạch hiện tại vẫn giữ nguyên.' : 'The task was not completed. Your current task and plan remain safe.'))
     } finally {
       setFocusBusy(false)
     }
@@ -544,6 +553,16 @@ function App() {
     }
   }
 
+  const rebuildPlan = async () => {
+    if (planBusy) return
+    const proposal = await planFlow.generate(Boolean(apiPlan))
+    if (proposal) {
+      setToast(locale === 'vi'
+        ? 'Đề xuất mới đã dùng dữ liệu và lịch rảnh mới nhất. Hãy xem lại trước khi duyệt.'
+        : 'The new proposal uses your latest data and availability. Review it before approval.')
+    }
+  }
+
   const saveManualTask = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (manualTaskBusy) return
@@ -567,7 +586,7 @@ function App() {
       setActiveView('today')
       setToast(locale === 'vi' ? 'Đã thêm nhiệm vụ vào danh sách ưu tiên.' : 'Task added to your priority list.')
     } catch (error) {
-      setToast(error instanceof Error ? error.message : (locale === 'vi' ? 'Không thể lưu nhiệm vụ.' : 'Could not save the task.'))
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Không thể lưu nhiệm vụ.' : 'Could not save the task.'))
     } finally {
       setManualTaskBusy(false)
     }
@@ -661,7 +680,7 @@ function App() {
       setSourceDocuments((current) => current.filter((item) => item.id !== document.id))
       setToast(locale === 'vi' ? 'Đã xóa tệp nguồn.' : 'Source file deleted.')
     } catch (error) {
-      setToast(error instanceof Error ? error.message : (locale === 'vi' ? 'Chưa thể xóa tệp nguồn.' : 'Could not delete the source file.'))
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Chưa thể xóa tệp nguồn.' : 'Could not delete the source file.'))
     } finally {
       setDeletingDocumentId(null)
     }
@@ -675,7 +694,7 @@ function App() {
       setConsents((current) => [...current, consent])
       setToast(locale === 'vi' ? 'Quyền dữ liệu đã được cập nhật.' : 'Data permission updated.')
     } catch (error) {
-      setToast(error instanceof Error ? error.message : (locale === 'vi' ? 'Không thể cập nhật quyền này.' : 'Could not update this permission.'))
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Không thể cập nhật quyền này.' : 'Could not update this permission.'))
     } finally {
       setSettingsBusy(false)
     }
@@ -694,7 +713,7 @@ function App() {
         if (refreshed) setLearnerProfile(refreshed)
         setToast(locale === 'vi' ? 'Hồ sơ đã thay đổi ở thẻ khác và được tải lại.' : 'Your profile changed in another tab and was reloaded.')
       } else {
-        setToast(error instanceof Error ? error.message : (locale === 'vi' ? 'Không thể lưu hồ sơ học tập.' : 'Could not save learner profile.'))
+        setToast(userFacingError(error, locale, locale === 'vi' ? 'Không thể lưu hồ sơ học tập.' : 'Could not save learner profile.'))
       }
     } finally {
       setSettingsBusy(false)
@@ -715,7 +734,7 @@ function App() {
       URL.revokeObjectURL(url)
       setToast(locale === 'vi' ? 'Tệp dữ liệu đã được tạo.' : 'Your data export is ready.')
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Could not create your data export.')
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Chưa thể tạo tệp xuất dữ liệu.' : 'Could not create your data export.'))
     } finally {
       setExportBusy(false)
     }
@@ -729,7 +748,7 @@ function App() {
       await sessionFlow.logout()
       clearWorkspace()
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Could not start account deletion.')
+      setToast(userFacingError(error, locale, locale === 'vi' ? 'Chưa thể bắt đầu xóa tài khoản.' : 'Could not start account deletion.'))
     } finally {
       setDeletionBusy(false)
     }
@@ -795,7 +814,6 @@ function App() {
     { id: 'today', icon: LayoutDashboard, label: t.today },
     { id: 'plan', icon: ListChecks, label: t.plan },
     { id: 'imports', icon: Inbox, label: t.imports },
-    { id: 'coach', icon: Sparkles, label: t.coach },
     { id: 'settings', icon: Settings2, label: t.settings },
   ]
 
@@ -858,27 +876,11 @@ function App() {
           <div className="top-actions">
             <button className="icon-button mobile-account-button" type="button" title={locale === 'vi' ? 'Đăng xuất' : 'Sign out'} aria-label={locale === 'vi' ? 'Đăng xuất' : 'Sign out'} onClick={() => void logout()}><LogOut size={18} /></button>
             <div className="language-switch" aria-label={locale === 'vi' ? 'Ngôn ngữ' : 'Language'}>
-              <button className={locale === 'vi' ? 'selected' : ''} onClick={() => setLocale('vi')} type="button">VI</button>
-              <button className={locale === 'en' ? 'selected' : ''} onClick={() => setLocale('en')} type="button">EN</button>
+              <button className={locale === 'vi' ? 'selected' : ''} onClick={() => void sessionFlow.changeLocale('vi')} type="button">VI</button>
+              <button className={locale === 'en' ? 'selected' : ''} onClick={() => void sessionFlow.changeLocale('en')} type="button">EN</button>
             </div>
           </div>
         </header>
-
-        {!session.user.emailVerified && (
-          <div className="email-verification-band" role="status">
-            <MailCheck size={19} />
-            <div>
-              <strong>{locale === 'vi' ? 'Xác minh email để bảo vệ tài khoản' : 'Verify your email to protect your account'}</strong>
-              <span>{session.user.email}</span>
-            </div>
-            <button type="button" disabled={verificationBusy} aria-busy={verificationBusy} onClick={() => void requestEmailVerification()}>
-              {verificationBusy
-                ? (locale === 'vi' ? 'Đang gửi...' : 'Sending...')
-                : (locale === 'vi' ? 'Gửi liên kết' : 'Send link')}
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        )}
 
         <div className="content-area">
           <section className="main-content">
@@ -951,14 +953,16 @@ function App() {
             {activeView === 'plan' && (
               <section className="plan-view">
                 <div className="page-heading compact"><div><p className="eyebrow"><WandSparkles size={15} /> {apiPlan ? (locale === 'vi' ? `Đề xuất phiên bản ${apiPlan.version}` : `Proposal version ${apiPlan.version}`) : (locale === 'vi' ? 'Chưa tạo đề xuất' : 'No proposal yet')}</p><h1>{locale === 'vi' ? 'Kế hoạch của bạn' : 'Your plan'}</h1><p className="subhead">{locale === 'vi' ? 'Tạo đề xuất từ dữ liệu đã xác nhận, xem lại rồi mới duyệt.' : 'Build from confirmed data, review the proposal, then approve it.'}</p></div>{apiPlan && <span className={planApproved ? 'approval-badge approved' : 'approval-badge'}>{planApproved ? <CheckCircle2 size={16} /> : <Clock3 size={16} />}{planApproved ? t.approved : t.schedule}</span>}</div>
-                {planFlow.error && <div className="inline-alert" role="alert"><CircleAlert size={18} /><div><strong>{locale === 'vi' ? 'Kế hoạch chưa thay đổi' : 'The plan did not change'}</strong><p>{planFlow.error}</p></div><button type="button" className="secondary-button" onClick={() => void approvePlan()}>{locale === 'vi' ? 'Thử lại' : 'Retry'}</button></div>}
+                {planFlow.error && <div className="inline-alert" role="alert"><CircleAlert size={18} /><div><strong>{locale === 'vi' ? 'Kế hoạch chưa thay đổi' : 'The plan did not change'}</strong><p>{planFlow.error}</p></div><button type="button" className="secondary-button" onClick={() => void (planFlow.errorCode === 'INVALID_PLAN_SCHEDULE' || planFlow.errorCode === 'PLAN_HAS_UNSCHEDULED_WORK' ? rebuildPlan() : approvePlan())}>{planFlow.errorCode === 'INVALID_PLAN_SCHEDULE' || planFlow.errorCode === 'PLAN_HAS_UNSCHEDULED_WORK' ? (locale === 'vi' ? 'Tạo lại' : 'Rebuild') : (locale === 'vi' ? 'Thử lại' : 'Retry')}</button></div>}
                 {!apiPlan && hasConfirmedTasks && <PlanningAssistant locale={locale} onSaved={(saved) => { setPlanningPreferences(saved); setToast(locale === 'vi' ? 'Đã lưu lịch rảnh. Bạn có thể tạo đề xuất tuần.' : 'Availability saved. You can build the weekly proposal.') }} />}
                 {!apiPlan ? <div className="workspace-empty"><ListChecks size={24} /><div><h2>{hasConfirmedTasks ? planningPreferences ? (locale === 'vi' ? 'Xây đề xuất đầu tiên' : 'Build your first proposal') : (locale === 'vi' ? 'Lưu lịch rảnh trước' : 'Save availability first') : (locale === 'vi' ? 'Thêm dữ liệu trước' : 'Add data first')}</h2><p>{hasConfirmedTasks ? (locale === 'vi' ? 'Chỉ nhiệm vụ và khung giờ đã xác nhận mới được đưa vào lịch tuần. Bạn sẽ xem lại trước khi duyệt.' : 'Only confirmed tasks and free windows enter the weekly plan. You will review it before approval.') : (locale === 'vi' ? 'Kế hoạch chỉ dùng nhiệm vụ bạn đã xác nhận.' : 'Plans only use tasks you have confirmed.')}</p></div><button type="button" className="primary-button" disabled={planBusy || (hasConfirmedTasks && !planningPreferences)} aria-busy={planBusy} onClick={() => hasConfirmedTasks ? void approvePlan() : setActiveView('imports')}><WandSparkles size={18} /> {hasConfirmedTasks ? (planningPreferences ? (locale === 'vi' ? 'Tạo kế hoạch tuần' : 'Build weekly plan') : (locale === 'vi' ? 'Chọn lịch rảnh ở trên' : 'Choose availability above')) : (locale === 'vi' ? 'Thêm dữ liệu' : 'Add data')}</button></div> : <>
                   <div className="plan-summary"><div><span>{locale === 'vi' ? 'Phiên bản' : 'Version'}</span><strong>{apiPlan.version}</strong></div><div><span>{locale === 'vi' ? 'Số phiên' : 'Blocks'}</span><strong>{apiPlan.items?.length ?? 0}</strong></div><div><span>{locale === 'vi' ? 'Tổng số phút' : 'Minutes'}</span><strong>{apiPlan.items?.reduce((total, item) => total + item.minutes, 0) ?? 0}</strong></div></div>
-                  <WeeklyPlanBoard plan={apiPlan} locale={locale} taskName={(taskId) => taskById.get(taskId)?.title ?? (locale === 'vi' ? 'Nhiệm vụ đã xác nhận' : 'Confirmed task')} taskStatus={(taskId) => taskById.get(taskId)?.status} onRecoverMissed={() => void openReplan('schedule_changed')} />
+                  {planWarnings.length > 0 && <div className="plan-capacity-alert" role="alert"><CircleAlert size={19} /><div><strong>{locale === 'vi' ? 'Một số việc chưa thể xếp đủ trong tuần' : 'Some work does not fit this week yet'}</strong><p>{locale === 'vi' ? 'Tăng lịch rảnh hoặc giới hạn mỗi ngày, sau đó tạo lại đề xuất. Priori không âm thầm bỏ phần việc này.' : 'Add availability or increase the daily limit, then rebuild. Priori will not silently omit this work.'}</p><ul>{planWarnings.map((warning) => <li key={warning.taskId}>{taskById.get(warning.taskId)?.title ?? (locale === 'vi' ? 'Nhiệm vụ đã xác nhận' : 'Confirmed task')}: {warning.remainingMinutes} {locale === 'vi' ? 'phút chưa xếp' : 'minutes unscheduled'}</li>)}</ul></div><button type="button" className="secondary-button" disabled={planBusy} onClick={() => void rebuildPlan()}><WandSparkles size={16} /> {locale === 'vi' ? 'Tạo lại' : 'Rebuild'}</button></div>}
+                  {planApproved && newlyConfirmedTasks.length > 0 && <div className="plan-update-alert"><Sparkles size={19} /><div><strong>{locale === 'vi' ? `${newlyConfirmedTasks.length} nhiệm vụ mới chưa có trong kế hoạch` : `${newlyConfirmedTasks.length} new task${newlyConfirmedTasks.length > 1 ? 's are' : ' is'} not in this plan`}</strong><p>{locale === 'vi' ? 'Kế hoạch đã duyệt vẫn giữ nguyên cho tới khi bạn xem và duyệt phiên bản thay thế.' : 'Your approved plan stays unchanged until you review and approve a replacement.'}</p></div><button type="button" className="primary-button" disabled={planBusy} onClick={() => void rebuildPlan()}><WandSparkles size={16} /> {locale === 'vi' ? 'Tạo đề xuất cập nhật' : 'Build updated proposal'}</button></div>}
+                  <WeeklyPlanBoard plan={apiPlan} locale={locale} tasks={tasks} availabilityBlocks={availabilityBlocks} preferences={planningPreferences} onRecoverMissed={() => void openReplan('schedule_changed')} />
                   {!planApproved && <PlanProposalEditor locale={locale} plan={apiPlan} taskName={(taskId) => taskById.get(taskId)?.title ?? (locale === 'vi' ? 'Nhiệm vụ đã xác nhận' : 'Confirmed task')} onSaved={replacePlan} />}
                   {planApproved && <details className="planning-revisit"><summary>{locale === 'vi' ? 'Cập nhật lịch rảnh cho đề xuất tiếp theo' : 'Update availability for the next proposal'}</summary><PlanningAssistant locale={locale} onSaved={(saved) => { setPlanningPreferences(saved); setToast(locale === 'vi' ? 'Đã lưu lịch rảnh mới. Kế hoạch đang duyệt không bị thay đổi.' : 'New availability saved. The approved plan was not changed.') }} /></details>}
-                  <div className="approval-bar"><div><ShieldCheck size={19} /><p>{locale === 'vi' ? 'Priori sẽ không thay đổi lịch này nếu bạn chưa duyệt.' : 'Priori will not change this schedule without your approval.'}</p></div>{!planApproved && <button type="button" className="primary-button" disabled={planBusy} aria-busy={planBusy} onClick={() => void approvePlan()}><Check size={18} /> {t.approve}</button>}</div>
+                  <div className="approval-bar"><div><ShieldCheck size={19} /><p>{locale === 'vi' ? 'Priori sẽ không thay đổi lịch này nếu bạn chưa duyệt.' : 'Priori will not change this schedule without your approval.'}</p></div>{!planApproved && <button type="button" className="primary-button" disabled={planBusy || planWarnings.length > 0} aria-busy={planBusy} onClick={() => void approvePlan()}><Check size={18} /> {t.approve}</button>}</div>
                 </>}
               </section>
             )}
@@ -977,7 +981,11 @@ function App() {
                 {importQueue.length > 0 && <section className="import-queue" aria-labelledby="import-queue-title"><div className="section-heading"><div><h2 id="import-queue-title">{locale === 'vi' ? 'Hàng đợi tệp' : 'File queue'}</h2><p>{locale === 'vi' ? 'Mỗi tệp được xử lý riêng; một tệp lỗi không làm mất các tệp khác.' : 'Each file is handled independently; one failure does not discard the others.'}</p></div><span>{importQueue.filter((item) => item.status === 'confirmed').length}/{importQueue.length}</span></div><div className="import-queue-list">{importQueue.map((item) => <div className={`import-queue-row ${item.status}`} key={item.id}><span className="import-queue-icon">{item.status === 'processing' || item.status === 'confirming' ? <LoaderCircle className="inline-spinner" size={16} /> : item.status === 'confirmed' ? <CircleCheck size={16} /> : item.status === 'error' ? <CircleAlert size={16} /> : <FileText size={16} />}</span><div><strong>{item.filename}</strong>{item.error && <small>{item.error}</small>}</div><span className="queue-status">{importStatusLabel(item.status, locale)}</span>{item.status === 'review' && <button type="button" className="secondary-button compact-button" onClick={() => importFlow.openReview(item.id)}>{locale === 'vi' ? 'Xem lại' : 'Review'}</button>}{item.status === 'error' && <button type="button" className="secondary-button compact-button" disabled={importBusy} onClick={() => void importFlow.retry(item.id)}><TimerReset size={14} /> {locale === 'vi' ? 'Thử lại' : 'Retry'}</button>}</div>)}</div></section>}
                 {importFlow.error && !reviewOpen && <div className="inline-alert" role="alert"><CircleAlert size={18} /><div><strong>{locale === 'vi' ? 'Một số tệp cần được xử lý lại' : 'Some files need attention'}</strong><p>{importFlow.error}</p></div></div>}
                 {reviewOpen && importReview && <section className="extract-review"><div className="review-heading"><div><span className="ai-chip"><Sparkles size={14} /> {importReview.kind === 'document' ? (importReview.provider?.startsWith('structured-') ? (locale === 'vi' ? 'Nhập dữ liệu có cấu trúc' : 'Structured import') : (locale === 'vi' ? 'AI đã trích xuất' : 'AI extracted')) : (locale === 'vi' ? 'Đã đọc ICS' : 'ICS parsed')}</span><h2>{locale === 'vi' ? `Xem lại ${importReview.filename}` : `Review ${importReview.filename}`}</h2></div><button className="icon-button" type="button" title={locale === 'vi' ? 'Đóng phần xem lại' : 'Close review'} aria-label={locale === 'vi' ? 'Đóng phần xem lại' : 'Close review'} onClick={importFlow.closeReview}><X size={18} /></button></div>{importReview.kind === 'document' ? <ExtractionReviewEditor locale={locale} extraction={importReview.extraction} busy={importBusy} onChange={updateDocumentExtraction} onConfirm={() => void confirmImport()} /> : <><div className="extracted-rows"><div><CalendarDays size={18} /><span>{importReview.busyBlockCount} {locale === 'vi' ? 'khung bận' : 'busy blocks'}</span><strong>{locale === 'vi' ? 'Lịch hiện tại của bạn vẫn chỉ đọc' : 'Your existing calendar remains read only'}</strong></div><div><ListChecks size={18} /><span>{importReview.taskCount} {locale === 'vi' ? 'nhiệm vụ được tìm thấy' : 'tasks found'}</span><strong>{locale === 'vi' ? 'Không nhiệm vụ nào vào kế hoạch trước khi xác nhận' : 'Nothing enters your plan before confirmation'}</strong></div></div><div className="review-actions"><p>{locale === 'vi' ? 'Sự kiện lịch chỉ được thêm sau khi bạn xác nhận.' : 'Calendar entries are added only after confirmation.'}</p><button className="primary-button" type="button" disabled={importBusy} aria-busy={importBusy} onClick={() => void confirmImport()}><Check size={17} /> {locale === 'vi' ? 'Xác nhận lịch' : 'Confirm calendar'}</button></div></>}</section>}
-                <section className="source-library" aria-labelledby="source-library-title"><div className="section-heading"><div><h2 id="source-library-title">{locale === 'vi' ? 'Tệp đã tải lên' : 'Uploaded files'}</h2><p>{locale === 'vi' ? 'Quản lý trạng thái, thời hạn lưu tệp gốc và xóa từng nguồn.' : 'Review status, raw-file retention, and delete individual sources.'}</p></div>{sourceDocumentsBusy && <LoaderCircle className="inline-spinner" size={17} />}</div>{!sourceDocumentsBusy && sourceDocuments.length === 0 ? <p className="empty-task-list">{locale === 'vi' ? 'Chưa có tệp nào được tải lên.' : 'No files uploaded yet.'}</p> : <div className="source-library-list">{sourceDocuments.map((document) => <div className="source-library-row" key={document.id}><FileText size={17} /><div><strong>{document.filename}</strong><span>{formatFileSize(document.sizeBytes)} · {importStatusLabel(document.status, locale)}</span></div><span>{document.rawDeletedAt ? (locale === 'vi' ? 'Tệp gốc đã hết hạn' : 'Raw file expired') : `${locale === 'vi' ? 'Tệp gốc đến' : 'Raw until'} ${new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-US', { dateStyle: 'medium' }).format(new Date(document.expiresAt))}`}</span><div className="source-library-actions">{canResumeDocument(document) && <button className="secondary-button compact-button" type="button" disabled={importBusy} onClick={() => void importFlow.resumeDocument(document)}>{document.status === 'review' ? (locale === 'vi' ? 'Xem lại' : 'Review') : (locale === 'vi' ? 'Tiếp tục' : 'Resume')}</button>}<button className="icon-button danger-icon" type="button" title={locale === 'vi' ? 'Xóa tệp nguồn' : 'Delete source file'} aria-label={locale === 'vi' ? `Xóa ${document.filename}` : `Delete ${document.filename}`} disabled={deletingDocumentId === document.id} onClick={() => void deleteSourceDocument(document)}>{deletingDocumentId === document.id ? <LoaderCircle className="inline-spinner" size={16} /> : <Trash2 size={16} />}</button></div></div>)}</div>}</section>
+                <section className="source-library" aria-labelledby="source-library-title">
+                  <div className="section-heading"><div><h2 id="source-library-title">{locale === 'vi' ? 'Tệp đã tải lên' : 'Uploaded files'}</h2><p>{locale === 'vi' ? 'Quản lý trạng thái, thời hạn lưu tệp gốc và xóa từng nguồn.' : 'Review status, raw-file retention, and delete individual sources.'}</p></div>{sourceDocumentsBusy && <LoaderCircle className="inline-spinner" size={17} />}</div>
+                  {!sourceDocumentsBusy && sourceDocuments.length === 0 ? <p className="empty-task-list">{locale === 'vi' ? 'Chưa có tệp nào được tải lên.' : 'No files uploaded yet.'}</p> : <div className="source-library-list">{sourceDocuments.map((document) => <div className="source-library-row" key={document.id}><FileText size={17} /><div><strong>{document.filename}</strong><span>{formatFileSize(document.sizeBytes)} · {importStatusLabel(document.status, locale)}</span></div><span>{document.rawDeletedAt ? (locale === 'vi' ? 'Tệp gốc đã hết hạn' : 'Raw file expired') : `${locale === 'vi' ? 'Tệp gốc đến' : 'Raw until'} ${new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-US', { dateStyle: 'medium' }).format(new Date(document.expiresAt))}`}</span><div className="source-library-actions">{canResumeDocument(document) && <button className="secondary-button compact-button" type="button" disabled={importBusy} onClick={() => void importFlow.resumeDocument(document)}>{document.status === 'review' ? (locale === 'vi' ? 'Xem lại' : 'Review') : (locale === 'vi' ? 'Tiếp tục' : 'Resume')}</button>}<button className="icon-button danger-icon" type="button" title={locale === 'vi' ? 'Xóa tệp nguồn' : 'Delete source file'} aria-label={locale === 'vi' ? `Xóa ${document.filename}` : `Delete ${document.filename}`} disabled={deletingDocumentId === document.id} onClick={() => void deleteSourceDocument(document)}>{deletingDocumentId === document.id ? <LoaderCircle className="inline-spinner" size={16} /> : <Trash2 size={16} />}</button></div></div>)}</div>}
+                  {sourceDocumentsNextCursor && <button className="secondary-button source-load-more" type="button" disabled={sourceDocumentsBusy} onClick={() => void loadMoreSourceDocuments()}>{locale === 'vi' ? 'Tải thêm tệp' : 'Load more files'}</button>}
+                </section>
               </section>
             )}
 
@@ -1026,7 +1034,7 @@ function App() {
           </section>
 
           <aside className="right-rail">
-            {hasConfirmedTasks && <><section className="coach-card"><div className="coach-card-head"><div><span className="assistant-dot"><Sparkles size={15} /></span><strong>Priori Agent</strong></div><button className="icon-button quiet" type="button" title={locale === 'vi' ? 'Mở bằng chứng ưu tiên' : 'Open coaching evidence'} aria-label={locale === 'vi' ? 'Mở bằng chứng ưu tiên' : 'Open coaching evidence'} onClick={() => setActiveView('coach')}><ChevronRight size={17} /></button></div><p>{recommendation?.assessment.evidence.slice(0, 2).join(' · ') ?? (locale === 'vi' ? 'Xác nhận dữ liệu để xem lý do ưu tiên.' : 'Confirm data to see the priority evidence.')}</p><div className="coach-mode"><span>{locale === 'vi' ? 'Độ chắc chắn dữ liệu' : 'Data certainty'}</span><strong>{confidenceLabel}</strong></div></section>
+            {hasConfirmedTasks && <><section className="coach-card"><div className="coach-card-head"><div><span className="assistant-dot"><Sparkles size={15} /></span><strong>{t.assistant}</strong></div><button className="icon-button quiet" type="button" title={locale === 'vi' ? 'Mở bằng chứng ưu tiên' : 'Open coaching evidence'} aria-label={locale === 'vi' ? 'Mở bằng chứng ưu tiên' : 'Open coaching evidence'} onClick={() => setActiveView('coach')}><ChevronRight size={17} /></button></div><p>{recommendation?.assessment.evidence.slice(0, 2).join(' · ') ?? (locale === 'vi' ? 'Xác nhận dữ liệu để xem lý do ưu tiên.' : 'Confirm data to see the priority evidence.')}</p><div className="coach-mode"><span>{locale === 'vi' ? 'Độ chắc chắn dữ liệu' : 'Data certainty'}</span><strong>{confidenceLabel}</strong></div></section>
             <section className="progress-card"><div className="card-heading"><h2>{locale === 'vi' ? 'Hoạt động học tập' : 'Learning activity'}</h2></div><div className="streak"><span><Flame size={18} fill="currentColor" /> {focusCompleted}</span><p>{locale === 'vi' ? 'phiên tập trung đã hoàn thành' : 'completed focus sessions'}</p></div><p className="progress-context">{metrics.plan_approved ? (locale === 'vi' ? `${metrics.plan_approved} kế hoạch đã được duyệt` : `${metrics.plan_approved} approved plans`) : (locale === 'vi' ? 'Chưa có kế hoạch được duyệt.' : 'No approved plan yet.')}</p></section></>}
             <section className="privacy-card"><LockKeyhole size={17} /><div><strong>{locale === 'vi' ? 'Không chia sẻ với trường' : 'Not shared with your school'}</strong><p>{locale === 'vi' ? 'Kế hoạch và rủi ro học tập này chỉ dành cho bạn.' : 'This study plan and risk signal are private to you.'}</p></div></section>
           </aside>
@@ -1047,7 +1055,7 @@ function App() {
 
       {focusOpen && recommendation && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="focus-title"><section className="focus-modal"><button className="icon-button modal-close" type="button" title={locale === 'vi' ? 'Đóng phiên tập trung' : 'Close focus session'} aria-label={locale === 'vi' ? 'Đóng phiên tập trung' : 'Close focus session'} disabled={focusBusy} onClick={() => { setFocusOpen(false); setFocusRunning(false) }}><X size={20} /></button><div className="focus-photo"><img src={focusImage} alt={locale === 'vi' ? 'Sinh viên xem lại kế hoạch học tập tại bàn' : 'Student reviewing a study plan at a desk'} /></div><div className="focus-overlay"><span className="focus-kicker">{recommendation.course.name} · {focusMinutes} {locale === 'vi' ? 'phút tập trung' : 'minute focus'}</span><h2 id="focus-title">{recommendation.task.title}</h2><p>{recommendation.firstStep}</p><div className="timer">{time}</div>{focusError && <div className="focus-error" role="alert"><CircleAlert size={17} /><span>{focusError}</span></div>}<div className="focus-controls"><button className={focusRunning ? 'pause-button' : 'primary-button'} type="button" disabled={focusBusy} onClick={() => setFocusRunning(!focusRunning)}>{focusRunning ? <><TimerReset size={17} /> {locale === 'vi' ? 'Tạm dừng' : 'Pause'}</> : <><Play size={17} fill="currentColor" /> {locale === 'vi' ? 'Tiếp tục' : 'Resume'}</>}</button><button className="pause-button" type="button" disabled={focusBusy} aria-busy={focusBusy} onClick={() => void finishFocusSession()}><CircleCheck size={17} /> {locale === 'vi' ? 'Kết thúc phiên' : 'Finish session'}</button><button className="focus-complete-button" type="button" disabled={focusBusy} aria-busy={focusBusy} onClick={() => void completeFocusTask()}><CheckCircle2 size={17} /> {locale === 'vi' ? 'Hoàn tất nhiệm vụ' : 'Complete task'}</button></div></div></section></div>}
 
-      {replanOpen && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="replan-title"><section className="replan-modal"><button className="icon-button modal-close" type="button" title={locale === 'vi' ? 'Đóng phần lập lại kế hoạch' : 'Close replanning'} aria-label={locale === 'vi' ? 'Đóng phần lập lại kế hoạch' : 'Close replanning'} onClick={() => setReplanOpen(false)}><X size={20} /></button><span className="ai-chip"><Sparkles size={14} /> Priori Agent</span><h2 id="replan-title">{locale === 'vi' ? 'Điều gì đang cản bạn?' : 'What is getting in the way?'}</h2><div className="friction-options"><button type="button" className={replanFriction === 'cannot_start' ? 'friction-selected' : ''} aria-pressed={replanFriction === 'cannot_start'} onClick={() => void selectReplanFriction('cannot_start')}><span>01</span>{locale === 'vi' ? 'Không biết bắt đầu' : 'I do not know where to start'}</button><button type="button" className={replanFriction === 'too_tired' ? 'friction-selected' : ''} aria-pressed={replanFriction === 'too_tired'} onClick={() => void selectReplanFriction('too_tired')}><span>02</span>{locale === 'vi' ? 'Quá mệt' : 'I am too tired'}</button><button type="button" className={replanFriction === 'schedule_changed' ? 'friction-selected' : ''} aria-pressed={replanFriction === 'schedule_changed'} onClick={() => void selectReplanFriction('schedule_changed')}><span>03</span>{locale === 'vi' ? 'Lịch vừa thay đổi' : 'My schedule changed'}</button></div>{replanBusy && <p className="replan-loading"><LoaderCircle size={16} /> {locale === 'vi' ? 'Đang chuẩn bị phương án...' : 'Preparing a proposal...'}</p>}{apiReplan && <div className="proposal"><span>{apiReplan.title}</span><strong>{apiReplan.changes[0] ?? (locale === 'vi' ? 'Phương án mới đã sẵn sàng để xem lại.' : 'A new proposal is ready for review.')}</strong><p>{apiReplan.rationale}</p><div className="replan-comparison"><span>{locale === 'vi' ? `Trước: ${apiPlan?.items?.[0]?.minutes ?? 0} phút` : `Before: ${apiPlan?.items?.[0]?.minutes ?? 0} min`}</span><span>{locale === 'vi' ? `Sau: ${apiReplan.proposedItems[0]?.minutes ?? 0} phút` : `After: ${apiReplan.proposedItems[0]?.minutes ?? 0} min`}</span></div></div>}<div className="replan-actions"><button type="button" className="secondary-button" onClick={() => setReplanOpen(false)}>{locale === 'vi' ? 'Chưa phù hợp' : 'Not right yet'}</button><button type="button" className="primary-button" disabled={replanBusy || !apiReplan} aria-busy={replanBusy} onClick={() => void approveReplan()}><Check size={18} /> {locale === 'vi' ? 'Duyệt phương án này' : 'Approve this plan'}</button></div></section></div>}
+      {replanOpen && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="replan-title"><section className="replan-modal"><button className="icon-button modal-close" type="button" title={locale === 'vi' ? 'Đóng phần lập lại kế hoạch' : 'Close replanning'} aria-label={locale === 'vi' ? 'Đóng phần lập lại kế hoạch' : 'Close replanning'} onClick={() => setReplanOpen(false)}><X size={20} /></button><span className="ai-chip"><Sparkles size={14} /> {t.assistant}</span><h2 id="replan-title">{locale === 'vi' ? 'Điều gì đang cản bạn?' : 'What is getting in the way?'}</h2><div className="friction-options"><button type="button" className={replanFriction === 'cannot_start' ? 'friction-selected' : ''} aria-pressed={replanFriction === 'cannot_start'} onClick={() => void selectReplanFriction('cannot_start')}><span>01</span>{locale === 'vi' ? 'Không biết bắt đầu' : 'I do not know where to start'}</button><button type="button" className={replanFriction === 'too_tired' ? 'friction-selected' : ''} aria-pressed={replanFriction === 'too_tired'} onClick={() => void selectReplanFriction('too_tired')}><span>02</span>{locale === 'vi' ? 'Quá mệt' : 'I am too tired'}</button><button type="button" className={replanFriction === 'schedule_changed' ? 'friction-selected' : ''} aria-pressed={replanFriction === 'schedule_changed'} onClick={() => void selectReplanFriction('schedule_changed')}><span>03</span>{locale === 'vi' ? 'Lịch vừa thay đổi' : 'My schedule changed'}</button></div>{replanBusy && <p className="replan-loading"><LoaderCircle size={16} /> {locale === 'vi' ? 'Đang chuẩn bị phương án...' : 'Preparing a proposal...'}</p>}{apiReplan && <div className="proposal"><span>{apiReplan.title}</span><strong>{apiReplan.changes[0] ?? (locale === 'vi' ? 'Phương án mới đã sẵn sàng để xem lại.' : 'A new proposal is ready for review.')}</strong><p>{apiReplan.rationale}</p><div className="replan-comparison"><span>{locale === 'vi' ? `Trước: ${apiPlan?.items?.[0]?.minutes ?? 0} phút` : `Before: ${apiPlan?.items?.[0]?.minutes ?? 0} min`}</span><span>{locale === 'vi' ? `Sau: ${apiReplan.proposedItems[0]?.minutes ?? 0} phút` : `After: ${apiReplan.proposedItems[0]?.minutes ?? 0} min`}</span></div></div>}<div className="replan-actions"><button type="button" className="secondary-button" onClick={() => setReplanOpen(false)}>{locale === 'vi' ? 'Chưa phù hợp' : 'Not right yet'}</button><button type="button" className="primary-button" disabled={replanBusy || !apiReplan} aria-busy={replanBusy} onClick={() => void approveReplan()}><Check size={18} /> {locale === 'vi' ? 'Duyệt phương án này' : 'Approve this plan'}</button></div></section></div>}
 
 
       {toast && <div className="toast"><CircleCheck size={18} /> {toast}</div>}

@@ -33,6 +33,25 @@ Production rollout for this checkpoint:
 
 No new third-party key is required. This slice reuses the existing OpenAI, PostgreSQL, Supabase Storage, Google Sign-In, and Sentry configuration. Outbound email/digests, Google Calendar synchronization, Canvas OAuth/extension handoff, and mobile optimization remain explicitly deferred.
 
+## Implementation checkpoint - 2026-07-29
+
+- [x] Keep plan-item IDs unique across proposal replacements and enforce tenant-matching task/plan references in PostgreSQL.
+- [x] Validate edited and approving proposals against current task state, deadlines, busy blocks, free windows, session limits, daily capacity, and every overlapping session.
+- [x] Report unscheduled minutes instead of silently dropping work, block incomplete approval, and offer a rebuild from the latest confirmed inputs.
+- [x] Give planning chat current tasks, course context, priority/Cost of Delay, busy blocks, and the current agenda without allowing AI to save or approve changes.
+- [x] Render a seven-day desktop board with study blocks, recurring free windows, busy blocks, deadlines, and the learner's IANA timezone.
+- [x] Persist the selected account locale and keep system errors, import recovery, navigation, and assistant labels in the chosen language.
+- [x] Bound task reads to cursor pages of 50 by default and 100 maximum; rate-limit all AI-backed routes through one per-user quota.
+- [x] Add local/CI browser coverage and regression tests for stale approval, midnight windows, nested overlaps, cross-route AI limits, pagination, input clearing, and bilingual network failures.
+
+Production rollout for this checkpoint:
+
+1. Apply `server/db/migrations/013_plan_integrity_and_warnings.sql` with `DATABASE_MIGRATOR_URL` before deploying the API.
+2. Deploy Render and Vercel from the same `main` commit.
+3. Smoke-test `/api/health`, cookie session restore, multi-file import, planning chat, weekly proposal/rebuild/approval, and VI/EN persistence through `https://priorilearn-omega.vercel.app`.
+
+No new required environment variable or third-party key was introduced. `AI_RATE_LIMIT_MAX` and `AI_RATE_LIMIT_WINDOW_MS` are optional production tuning values with safe defaults. Outbound email/digests, Google Calendar synchronization, Canvas OAuth/extension handoff, mobile optimization, and the recorded restore drill remain deferred.
+
 ## Deployment milestones
 
 ### Milestone 1: Durable private alpha

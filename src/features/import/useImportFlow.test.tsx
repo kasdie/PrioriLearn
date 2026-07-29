@@ -31,6 +31,22 @@ describe('useImportFlow', () => {
     expect(result.current.review).toMatchObject({ kind: 'document', documentId: 'document-1' })
   })
 
+  it('does not expose an English browser network error in Vietnamese mode', async () => {
+    const api = {
+      uploadAndExtract: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')),
+      extractDocument: vi.fn(),
+      confirmDocument: vi.fn(),
+      importIcs: vi.fn(),
+      confirmIcs: vi.fn(),
+    }
+    const { result } = renderHook(() => useImportFlow({ api, locale: 'vi' }))
+
+    await act(() => result.current.selectDocument(file))
+
+    expect(result.current.error).toBe('Không thể chuẩn bị tệp này. Chưa có dữ liệu nào được xác nhận.')
+    expect(result.current.error).not.toContain('Failed to fetch')
+  })
+
   it('does not mark a review confirmed when confirmation fails', async () => {
     const api = {
       uploadAndExtract: vi.fn().mockResolvedValue({

@@ -127,7 +127,9 @@ function readableAuthError(error: unknown, locale: Locale): string {
       en: 'The email could not be sent. Please try again shortly.',
     },
   }
-  return messages[error.code]?.[locale] ?? error.message
+  return messages[error.code]?.[locale] ?? (locale === 'vi'
+    ? 'Không thể hoàn tất yêu cầu đăng nhập. Vui lòng thử lại.'
+    : error.message)
 }
 
 export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: AuthScreenProps) {
@@ -346,11 +348,6 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
                   </button>
                 </div>
               </label>
-            )}
-            {mode === 'login' && (
-              <button className="auth-forgot" type="button" onClick={() => selectMode('forgot')}>
-                {t.forgotPassword}
-              </button>
             )}
             <button className="auth-submit" type="submit" disabled={busy} aria-busy={busy}>
               <span>

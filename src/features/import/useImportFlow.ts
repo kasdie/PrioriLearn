@@ -43,7 +43,7 @@ function readableImportError(cause: unknown, locale: 'vi' | 'en', phase: 'prepar
       ? 'Không thể chuẩn bị tệp này. Chưa có dữ liệu nào được xác nhận.'
       : 'Chưa có dữ liệu nào được xác nhận. Hãy xem lại bản nháp và thử lại.')
   }
-  if (cause instanceof Error) return cause.message
+  if (cause instanceof Error && locale === 'en') return cause.message
   return locale === 'vi'
     ? phase === 'prepare' ? 'Không thể chuẩn bị tệp này. Chưa có dữ liệu nào được xác nhận.' : 'Chưa có dữ liệu nào được xác nhận. Hãy xem lại bản nháp và thử lại.'
     : phase === 'prepare' ? 'The import could not be prepared. Your file was not confirmed.' : 'Nothing was confirmed. Review the draft and try again.'

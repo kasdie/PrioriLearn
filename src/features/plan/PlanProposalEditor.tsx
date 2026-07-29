@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowDown, ArrowUp, Save, Trash2 } from 'lucide-react'
-import { prioriApi, type ApiPlan } from '../../lib/api'
+import { prioriApi, userFacingError, type ApiPlan } from '../../lib/api'
 
 type PlanItem = NonNullable<ApiPlan['items']>[number]
 type PlanEditorApi = Pick<typeof prioriApi, 'editPlan'>
@@ -21,6 +21,7 @@ function localDateTimeValue(value: string): string {
 
 function withTiming(item: PlanItem, startsAt: string, minutes: number): PlanItem {
   const start = new Date(startsAt)
+  if (Number.isNaN(start.getTime()) || !Number.isFinite(minutes) || minutes < 5) return item
   return {
     ...item,
     startsAt: start.toISOString(),
@@ -73,7 +74,7 @@ export function PlanProposalEditor({ plan, locale, taskName, onSaved, api = prio
     try {
       onSaved(await api.editPlan(plan, items, locale))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : `${text.failed}. ${text.retained}`)
+      setError(userFacingError(cause, locale, `${text.failed}. ${text.retained}`))
     } finally {
       setBusy(false)
     }

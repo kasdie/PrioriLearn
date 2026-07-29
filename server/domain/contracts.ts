@@ -238,6 +238,12 @@ export type PlanItem = {
   rationale: string
 }
 
+export type PlanSchedulingWarning = {
+  taskId: string
+  remainingMinutes: number
+  reason: 'insufficient_capacity' | 'deadline_too_close'
+}
+
 export type StudyPlan = {
   id: string
   tenantId: string
@@ -245,6 +251,7 @@ export type StudyPlan = {
   status: 'proposed' | 'approved' | 'superseded'
   previousPlanId?: string
   items: PlanItem[]
+  schedulingWarnings: PlanSchedulingWarning[]
   rationale: string
   createdAt: string
   approvedAt?: string
@@ -409,6 +416,7 @@ export const PlanGenerateInputSchema = z.object({
   availableMinutes: z.number().int().min(15).max(720).default(135),
   coachMode: CoachModeSchema.default('discipline'),
   locale: LocaleSchema.optional(),
+  replacePending: z.boolean().default(false),
   busyBlocks: z.array(z.object({
     title: z.string().default('Busy'),
     startsAt: z.string(),
@@ -418,6 +426,10 @@ export const PlanGenerateInputSchema = z.object({
 
 export const PlanApprovalInputSchema = z.object({
   expectedVersion: z.number().int().positive(),
+})
+
+export const UserLocaleInputSchema = z.object({
+  locale: LocaleSchema,
 })
 
 export const PlanItemEditSchema = z.object({

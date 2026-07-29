@@ -1,5 +1,6 @@
 export type ApiPlan = {
   id: string
+  createdAt?: string
   version: number
   status: 'proposed' | 'approved' | 'superseded'
   items?: Array<{
@@ -10,6 +11,11 @@ export type ApiPlan = {
     minutes: number
     firstStep: string
     rationale: string
+  }>
+  schedulingWarnings?: Array<{
+    taskId: string
+    remainingMinutes: number
+    reason: 'insufficient_capacity' | 'deadline_too_close'
   }>
   rationale?: string
 }
@@ -41,6 +47,15 @@ export type ApiTask = {
   estimatedMinutes: number
   status: 'draft' | 'confirmed' | 'completed'
   confidence: number
+  createdAt?: string
+}
+
+export type ApiAvailabilityBlock = {
+  id: string
+  title: string
+  startsAt: string
+  endsAt: string
+  sourceKind: 'manual' | 'ics' | 'google_calendar'
 }
 
 export type ApiPriorityAssessment = {
@@ -223,6 +238,24 @@ export class ApiClientError extends Error {
   }
 }
 
+const localizedApiErrors: Record<string, { vi: string; en: string }> = {
+  INVALID_PLAN_SCHEDULE: { vi: 'Lịch chỉnh sửa đang chồng chéo, vượt giới hạn hoặc nằm ngoài giờ rảnh đã xác nhận.', en: 'The edited schedule overlaps, exceeds a limit, or falls outside confirmed free time.' },
+  PLAN_HAS_UNSCHEDULED_WORK: { vi: 'Vẫn còn phần việc chưa xếp được. Hãy cập nhật lịch rảnh và tạo lại đề xuất.', en: 'Some work is still unscheduled. Update availability and rebuild the proposal.' },
+  PLAN_VERSION_CONFLICT: { vi: 'Kế hoạch đã thay đổi ở nơi khác. Hãy xem lại phiên bản mới nhất.', en: 'The plan changed elsewhere. Review the latest version.' },
+  PENDING_PLAN_REVIEW_REQUIRED: { vi: 'Hãy xử lý đề xuất đang chờ trước khi tạo phương án khác.', en: 'Review the pending proposal before creating another one.' },
+  NO_SCHEDULABLE_TASKS: { vi: 'Chưa có nhiệm vụ nào phù hợp với lịch rảnh hiện tại.', en: 'No confirmed task fits the current availability.' },
+  PLANNING_PREFERENCES_VERSION_CONFLICT: { vi: 'Lịch rảnh đã thay đổi ở thẻ khác và cần được tải lại.', en: 'Availability changed in another tab and must be reloaded.' },
+  EXTRACTION_FAILED: { vi: 'Không thể đọc tệp này. Bạn có thể thử lại hoặc dùng tệp khác.', en: 'This file could not be read. Retry it or use another file.' },
+  EXTRACTION_PENDING: { vi: 'Tệp vẫn đang được xử lý. Hãy thử lại sau ít phút.', en: 'The file is still processing. Try again shortly.' },
+  AI_RATE_LIMITED: { vi: 'Bạn đã dùng hết lượt AI tạm thời. Hãy chờ một lúc rồi thử lại; dữ liệu hiện tại vẫn được giữ nguyên.', en: 'You have temporarily reached the AI request limit. Wait a little and try again; your current data is unchanged.' },
+  UNAUTHENTICATED: { vi: 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.', en: 'Your session expired. Sign in again.' },
+}
+
+export function userFacingError(error: unknown, locale: 'vi' | 'en', fallback: string): string {
+  if (error instanceof ApiClientError) return localizedApiErrors[error.code]?.[locale] ?? (locale === 'en' ? error.message : fallback)
+  return locale === 'en' && error instanceof Error ? error.message : fallback
+}
+
 function apiUrl(path: string): string {
   return `/api${path}`
 }
@@ -334,6 +367,13 @@ export const prioriApi = {
     }
   },
 
+  async updateLocale(locale: 'vi' | 'en'): Promise<ApiSession> {
+    return apiFetch<ApiSession>('/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ locale }),
+    })
+  },
+
   async dashboard(locale?: 'vi' | 'en'): Promise<ApiDashboard> {
     return apiFetch<ApiDashboard>(`/dashboard${locale ? `?locale=${locale}` : ''}`)
   },
@@ -381,8 +421,26 @@ export const prioriApi = {
     return response.receipt
   },
 
-  async tasks(): Promise<{ tasks: ApiTask[]; courses: ApiCourse[] }> {
-    return apiFetch('/tasks')
+  async tasks(): Promise<{ tasks: ApiTask[]; courses: ApiCourse[]; availabilityBlocks: ApiAvailabilityBlock[] }> {
+    const tasks: ApiTask[] = []
+    let courses: ApiCourse[] = []
+    let availabilityBlocks: ApiAvailabilityBlock[] = []
+    let cursor: string | undefined
+    do {
+      const parameters = new URLSearchParams({ limit: '100' })
+      if (cursor) parameters.set('cursor', cursor)
+      const page = await apiFetch<{
+        tasks: ApiTask[]
+        courses: ApiCourse[]
+        availabilityBlocks: ApiAvailabilityBlock[]
+        nextCursor?: string
+      }>(`/tasks?${parameters.toString()}`)
+      tasks.push(...page.tasks)
+      courses = page.courses
+      availabilityBlocks = page.availabilityBlocks
+      cursor = page.nextCursor
+    } while (cursor && tasks.length < 10_000)
+    return { tasks, courses, availabilityBlocks }
   },
 
   async createTask(input: {
@@ -504,10 +562,10 @@ export const prioriApi = {
     return response.reply
   },
 
-  async generatePlan(locale?: 'vi' | 'en'): Promise<ApiPlan> {
+  async generatePlan(locale?: 'vi' | 'en', replacePending = false): Promise<ApiPlan> {
     const response = await apiFetch<{ plan: ApiPlan }>('/plans/generate', {
       method: 'POST',
-      body: JSON.stringify({ availableMinutes: 135, coachMode: 'discipline', locale }),
+      body: JSON.stringify({ availableMinutes: 135, coachMode: 'discipline', locale, replacePending }),
     })
     return response.plan
   },

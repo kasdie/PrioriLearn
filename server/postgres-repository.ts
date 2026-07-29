@@ -270,6 +270,7 @@ function rowPlan(row: Row, items: StudyPlan['items']): StudyPlan {
     previousPlanId: row.previous_plan_id ? String(row.previous_plan_id) : undefined,
     rationale: String(row.rationale),
     items,
+    schedulingWarnings: json<StudyPlan['schedulingWarnings']>(row.scheduling_warnings, []),
     createdAt: iso(row.created_at),
     approvedAt: row.approved_at ? iso(row.approved_at) : undefined,
   }
@@ -334,9 +335,9 @@ export class PostgresRepository implements Repository {
 
   private async insertPlan(client: pg.PoolClient, plan: StudyPlan): Promise<void> {
     await client.query(
-      `INSERT INTO study_plans (id, tenant_id, version, status, previous_plan_id, rationale, approval_receipt_hash, created_at, approved_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [plan.id, plan.tenantId, plan.version, plan.status, plan.previousPlanId ?? null, plan.rationale, plan.approvalReceipt ? hashSessionToken(plan.approvalReceipt) : null, plan.createdAt, plan.approvedAt ?? null],
+      `INSERT INTO study_plans (id, tenant_id, version, status, previous_plan_id, rationale, scheduling_warnings, approval_receipt_hash, created_at, approved_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [plan.id, plan.tenantId, plan.version, plan.status, plan.previousPlanId ?? null, plan.rationale, JSON.stringify(plan.schedulingWarnings), plan.approvalReceipt ? hashSessionToken(plan.approvalReceipt) : null, plan.createdAt, plan.approvedAt ?? null],
     )
     for (const [position, item] of plan.items.entries()) {
       await client.query(
@@ -414,6 +415,19 @@ export class PostgresRepository implements Repository {
         client,
         'SELECT * FROM users WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL',
         [userId, tenantId],
+      )
+      return row ? rowUser(row) : undefined
+    })
+  }
+
+  async updateUserLocale(tenantId: string, userId: string, locale: User['locale']): Promise<User | undefined> {
+    return this.withTenant(tenantId, async (client) => {
+      const row = await this.oneOrUndefined(
+        client,
+        `UPDATE users SET locale = $3
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         RETURNING *`,
+        [userId, tenantId, locale],
       )
       return row ? rowUser(row) : undefined
     })
@@ -681,6 +695,24 @@ export class PostgresRepository implements Repository {
     return this.withTenant(tenantId, async (client) => {
       const result = await client.query<Row>('SELECT * FROM tasks WHERE tenant_id = $1 ORDER BY due_at NULLS LAST, created_at', [tenantId])
       return result.rows.map(rowTask)
+    })
+  }
+
+  async listTasksPage(tenantId: string, input: DocumentPageInput): Promise<CursorPage<Task>> {
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query<Row>(
+        `SELECT * FROM tasks
+         WHERE tenant_id = $1
+           AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz
+             OR (created_at = $2::timestamptz AND id < $3::uuid))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $4`,
+        [tenantId, input.before?.createdAt ?? null, input.before?.id ?? null, input.limit + 1],
+      )
+      const rows = result.rows.map(rowTask)
+      const items = rows.slice(0, input.limit)
+      const last = items.at(-1)
+      return { items, next: rows.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : undefined }
     })
   }
 
@@ -1073,12 +1105,13 @@ export class PostgresRepository implements Repository {
   async savePlan(plan: StudyPlan): Promise<StudyPlan> {
     return this.withTenant(plan.tenantId, async (client) => {
       await client.query(
-        `INSERT INTO study_plans (id, tenant_id, version, status, previous_plan_id, rationale, approval_receipt_hash, created_at, approved_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO study_plans (id, tenant_id, version, status, previous_plan_id, rationale, scheduling_warnings, approval_receipt_hash, created_at, approved_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, rationale = EXCLUDED.rationale,
+           scheduling_warnings = EXCLUDED.scheduling_warnings,
            approval_receipt_hash = COALESCE(EXCLUDED.approval_receipt_hash, study_plans.approval_receipt_hash),
            approved_at = COALESCE(EXCLUDED.approved_at, study_plans.approved_at)`,
-        [plan.id, plan.tenantId, plan.version, plan.status, plan.previousPlanId ?? null, plan.rationale, plan.approvalReceipt ? hashSessionToken(plan.approvalReceipt) : null, plan.createdAt, plan.approvedAt ?? null],
+        [plan.id, plan.tenantId, plan.version, plan.status, plan.previousPlanId ?? null, plan.rationale, JSON.stringify(plan.schedulingWarnings), plan.approvalReceipt ? hashSessionToken(plan.approvalReceipt) : null, plan.createdAt, plan.approvedAt ?? null],
       )
       await client.query('DELETE FROM plan_items WHERE plan_id = $1', [plan.id])
       for (const [position, item] of plan.items.entries()) {
@@ -1161,7 +1194,8 @@ export class PostgresRepository implements Repository {
         version: Number(versionRow?.version ?? 0) + 1,
         status: 'proposed',
         previousPlanId: input.previousPlanId ?? (active ? String(active.id) : undefined),
-        items: input.items,
+        items: input.items.map((item) => ({ ...item, id: randomUUID() })),
+        schedulingWarnings: input.schedulingWarnings ?? [],
         rationale: input.rationale,
         createdAt: new Date().toISOString(),
       }
@@ -1190,7 +1224,8 @@ export class PostgresRepository implements Repository {
         version: Number(versionRow?.version ?? 0) + 1,
         status: 'proposed',
         previousPlanId: planId,
-        items: input.items,
+        items: input.items.map((item) => ({ ...item, id: randomUUID() })),
+        schedulingWarnings: input.schedulingWarnings ?? [],
         rationale: input.rationale,
         createdAt: new Date().toISOString(),
       }

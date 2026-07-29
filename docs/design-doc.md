@@ -10,8 +10,10 @@ Implemented boundaries:
 - PostgreSQL production repository with tenant-scoped queries and a memory adapter for local/test use.
 - Supabase private object storage plus a local adapter, 10 MB upload limit, 30-day expiry, durable lifecycle jobs, document deletion, and account deletion.
 - Review-gated document extraction and ICS import. Extracted data cannot enter planning before confirmation.
+- Multi-file intake for up to 10 PDF, PNG, JPEG, TXT, CSV, JSON, or JSONL files per selection, with two independent extraction workers in the browser queue.
 - Deterministic priority scoring and Cost of Delay with evidence, assumptions, and uncertainty.
-- Conflict-aware scheduling, coach-mode limits, immutable plan versions, approval receipts, check-ins, replan proposals, explicit focus completion, missed-block recovery, and tenant-private learner-profile preferences with correction/deletion controls.
+- Versioned planning preferences, AI-assisted availability intake, and a seven-day board with free windows, busy blocks, deadlines, daily limits, timezone/DST handling, and explicit unscheduled-work warnings.
+- Conflict-aware scheduling, coach-mode limits, immutable plan versions, approval receipts, approval-time revalidation, check-ins, replan proposals, explicit focus completion, missed-block recovery, and tenant-private learner-profile preferences with correction/deletion controls.
 - Consent audit and product-event APIs, server-verified Google Sign-In, and no institution-facing V1 routes.
 - PostgreSQL migrations with tenant foreign keys, RLS policies, encrypted-token columns, and cohort threshold constraints.
 
@@ -60,18 +62,19 @@ All protected routes require the host-only HttpOnly session cookie and resolve t
 | Endpoint | Contract |
 | --- | --- |
 | `POST /api/auth/register`, `/login`, `/demo` | Create a personal tenant/session or explicitly enter seeded demo mode; repeated attempts are rate limited |
-| `GET /api/me`, `POST /api/auth/logout` | Restore the current account context or revoke the current session immediately |
+| `GET/PATCH /api/me`, `POST /api/auth/logout` | Restore the current account context, persist the selected locale, or revoke the current session immediately |
 | `POST /api/auth/email-verification/request`, `/confirm` | Send and consume a one-time verification link; Google identities are already verified |
 | `POST /api/auth/password-reset/request`, `/confirm` | Return a non-enumerating request result, replace the password, and revoke every previous session |
 | `GET /api/dashboard` | Return confirmed tasks ranked with factorized assessments |
-| `GET/POST/PATCH /api/tasks` | Read and manage tenant-owned confirmed tasks |
+| `GET/POST/PATCH /api/tasks` | Read tenant-owned tasks through a bounded cursor page and manage confirmed tasks |
 | `POST /api/documents` | Store one PDF, PNG, JPEG, TXT, CSV, JSON, or JSONL file with a 30-day raw expiry |
 | `POST /api/documents/:id/extract` | Idempotently enqueue extraction and return HTTP 202; `GET /api/documents/:id` exposes `extracting`, `extraction_failed`, or the review draft |
 | `POST /api/documents/:id/confirm` | Apply reviewed fields; idempotent after confirmation |
 | `POST /api/imports/ics`, `/api/imports/:id/confirm` | Parse a calendar preview, then persist approved tasks/busy blocks |
 | `POST /api/priority-assessments` | Calculate the published 30/25/20/15/10 score and Cost of Delay |
-| `POST /api/plans/generate` | Create a proposed version without changing an approved plan |
-| `POST /api/plans/:id/approve` | Approve only the expected current version |
+| `GET/PUT /api/planning/preferences`, `POST /api/planning/chat` | Save versioned free-time/capacity preferences or receive a non-mutating agenda/availability suggestion |
+| `POST /api/plans/generate` | Create or explicitly replace a proposed seven-day version without changing an approved plan |
+| `PUT /api/plans/:id/proposal`, `POST /api/plans/:id/approve` | Validate edits and approve only the expected current version after rechecking current tasks and availability |
 | `POST /api/check-ins` | Draft a replan against one approved base version |
 | `POST /api/replan-proposals/:id/approve` | Supersede the base and create a newly approved immutable version |
 | `GET/POST /api/consents` | Read the audit trail or append a purpose-specific decision |

@@ -1,10 +1,52 @@
 import { randomUUID } from 'node:crypto'
-import type { CoachMode, Locale, PlanItem, PlanningPreferences, PriorityAssessment, Task } from '../domain/contracts.js'
+import type {
+  CoachMode,
+  Locale,
+  PlanItem,
+  PlanSchedulingWarning,
+  PlanningPreferences,
+  PriorityAssessment,
+  Task,
+} from '../domain/contracts.js'
 
 type BusyBlock = { startsAt: string; endsAt: string }
 type RankedTask = { task: Task; assessment: PriorityAssessment }
 type ConcreteStudyWindow = { startsAt: Date; endsAt: Date; localDayKey: string }
 type LocalDateParts = { year: number; month: number; day: number }
+
+export type PlanValidationIssue = {
+  code: 'TASK_NOT_FOUND' | 'TASK_NOT_CONFIRMED' | 'DURATION_MISMATCH' | 'ITEM_OVERLAP' | 'BUSY_TIME_CONFLICT' | 'OUTSIDE_FREE_WINDOW' | 'DAILY_LIMIT_EXCEEDED' | 'SESSION_LIMIT_EXCEEDED' | 'AFTER_DEADLINE'
+  taskId?: string
+  itemId?: string
+  message: string
+}
+
+export type WeeklyPlanResult = {
+  items: PlanItem[]
+  schedulingWarnings: PlanSchedulingWarning[]
+}
+
+export function summarizeSchedulingWarnings(
+  tasks: Task[],
+  items: PlanItem[],
+  horizonEnd: Date,
+): PlanSchedulingWarning[] {
+  const scheduledMinutes = new Map<string, number>()
+  for (const item of items) scheduledMinutes.set(item.taskId, (scheduledMinutes.get(item.taskId) ?? 0) + item.minutes)
+  return tasks.flatMap((task) => {
+    const scheduled = scheduledMinutes.get(task.id) ?? 0
+    const remainingMinutes = Math.max(0, task.estimatedMinutes - scheduled)
+    if (remainingMinutes < 5) return []
+    const deadline = task.dueAt ? new Date(task.dueAt) : undefined
+    const belongsToThisHorizon = !deadline || deadline <= horizonEnd || scheduled > 0
+    if (!belongsToThisHorizon) return []
+    return [{
+      taskId: task.id,
+      remainingMinutes,
+      reason: deadline && deadline <= horizonEnd ? 'deadline_too_close' as const : 'insufficient_capacity' as const,
+    }]
+  })
+}
 
 const MODE_SESSION_LIMIT: Record<CoachMode, number> = {
   gentle: 20,
@@ -115,8 +157,13 @@ export function schedulePlan(input: {
       remaining -= 10
     }
     if (remaining < 15) break
-    const minutes = Math.min(task.estimatedMinutes, sessionLimit, remaining)
+    let minutes = Math.min(task.estimatedMinutes, sessionLimit, remaining)
     cursor = movePastConflicts(cursor, minutes, sortedBusyBlocks)
+    if (task.dueAt) {
+      const deadlineMinutes = Math.floor((Date.parse(task.dueAt) - cursor.getTime()) / 60_000)
+      minutes = Math.min(minutes, deadlineMinutes)
+      if (minutes < 5) continue
+    }
     const end = new Date(cursor.getTime() + minutes * 60_000)
     items.push({
       id: randomUUID(),
@@ -194,14 +241,129 @@ function subtractBusyBlocks(windows: ConcreteStudyWindow[], busyBlocks: BusyBloc
   })
 }
 
-export function scheduleWeeklyPlan(input: {
+function localDateTime(date: Date, preferences: PlanningPreferences): { dayKey: string; dayOfWeek: number; minute: number } {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: preferences.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date)
+    const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value)
+    const year = value('year')
+    const month = value('month')
+    const day = value('day')
+    const hour = value('hour')
+    const minute = value('minute')
+    if ([year, month, day, hour, minute].every(Number.isInteger)) {
+      return {
+        dayKey: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+        dayOfWeek: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+        minute: hour * 60 + minute,
+      }
+    }
+  } catch {
+    // Use the student-confirmed fixed offset below.
+  }
+  const shifted = new Date(date.getTime() + preferences.utcOffsetMinutes * 60_000)
+  return {
+    dayKey: shifted.toISOString().slice(0, 10),
+    dayOfWeek: shifted.getUTCDay(),
+    minute: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
+  }
+}
+
+function overlaps(startsAt: Date, endsAt: Date, otherStartsAt: Date, otherEndsAt: Date): boolean {
+  return startsAt < otherEndsAt && endsAt > otherStartsAt
+}
+
+function nextDayKey(dayKey: string): string {
+  const date = new Date(`${dayKey}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + 1)
+  return date.toISOString().slice(0, 10)
+}
+
+export function validatePlanItems(input: {
+  items: PlanItem[]
+  tasks: Task[]
+  preferences?: PlanningPreferences
+  busyBlocks: BusyBlock[]
+}): PlanValidationIssue[] {
+  const issues: PlanValidationIssue[] = []
+  const tasks = new Map(input.tasks.map((task) => [task.id, task]))
+  const sortedItems = [...input.items].sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt))
+  const usedByDay = new Map<string, number>()
+
+  for (const [index, item] of sortedItems.entries()) {
+    const task = tasks.get(item.taskId)
+    const startsAt = new Date(item.startsAt)
+    const endsAt = new Date(item.endsAt)
+    const duration = (endsAt.getTime() - startsAt.getTime()) / 60_000
+    if (!task) {
+      issues.push({ code: 'TASK_NOT_FOUND', taskId: item.taskId, itemId: item.id, message: 'The plan item references a task outside this workspace.' })
+      continue
+    }
+    if (task.status !== 'confirmed') {
+      issues.push({ code: 'TASK_NOT_CONFIRMED', taskId: task.id, itemId: item.id, message: 'Only confirmed, incomplete tasks can be scheduled.' })
+    }
+    if (!Number.isInteger(duration) || duration !== item.minutes) {
+      issues.push({ code: 'DURATION_MISMATCH', taskId: task.id, itemId: item.id, message: 'The item duration does not match its start and end time.' })
+    }
+    const overlapsEarlierItem = sortedItems
+      .slice(0, index)
+      .some((previous) => startsAt < new Date(previous.endsAt))
+    if (overlapsEarlierItem) {
+      issues.push({ code: 'ITEM_OVERLAP', taskId: task.id, itemId: item.id, message: 'Study sessions cannot overlap.' })
+    }
+    if (input.busyBlocks.some((block) => overlaps(startsAt, endsAt, new Date(block.startsAt), new Date(block.endsAt)))) {
+      issues.push({ code: 'BUSY_TIME_CONFLICT', taskId: task.id, itemId: item.id, message: 'This session overlaps a busy calendar block.' })
+    }
+    if (task.dueAt && endsAt > new Date(task.dueAt)) {
+      issues.push({ code: 'AFTER_DEADLINE', taskId: task.id, itemId: item.id, message: 'A study session cannot end after the task deadline.' })
+    }
+
+    if (input.preferences) {
+      const startLocal = localDateTime(startsAt, input.preferences)
+      const endLocal = localDateTime(endsAt, input.preferences)
+      const endMinute = startLocal.dayKey === endLocal.dayKey
+        ? endLocal.minute
+        : endLocal.dayKey === nextDayKey(startLocal.dayKey) && endLocal.minute === 0
+          ? 24 * 60
+          : null
+      const insideWindow = endMinute !== null
+        && input.preferences.windows.some((window) => (
+          window.dayOfWeek === startLocal.dayOfWeek
+          && startLocal.minute >= window.startMinute
+          && endMinute <= window.endMinute
+        ))
+      if (!insideWindow) {
+        issues.push({ code: 'OUTSIDE_FREE_WINDOW', taskId: task.id, itemId: item.id, message: 'This session is outside the free time you confirmed.' })
+      }
+      if (item.minutes > MODE_SESSION_LIMIT[input.preferences.coachMode]) {
+        issues.push({ code: 'SESSION_LIMIT_EXCEEDED', taskId: task.id, itemId: item.id, message: 'This session exceeds the selected intensity limit.' })
+      }
+      const nextUsed = (usedByDay.get(startLocal.dayKey) ?? 0) + item.minutes
+      usedByDay.set(startLocal.dayKey, nextUsed)
+      if (nextUsed > input.preferences.dailyMinutes) {
+        issues.push({ code: 'DAILY_LIMIT_EXCEEDED', taskId: task.id, itemId: item.id, message: 'The total study time exceeds the daily limit.' })
+      }
+    }
+  }
+
+  return issues
+}
+
+export function scheduleWeeklyPlanWithReport(input: {
   rankedTasks: RankedTask[]
   preferences: PlanningPreferences
   busyBlocks: BusyBlock[]
   startsAt?: string
   horizonDays?: number
   now?: Date
-}): PlanItem[] {
+}): WeeklyPlanResult {
   const parsedStart = input.startsAt ? new Date(input.startsAt) : input.now ?? new Date()
   const notBefore = Number.isNaN(parsedStart.getTime()) ? input.now ?? new Date() : parsedStart
   const windows = subtractBusyBlocks(
@@ -212,14 +374,18 @@ export function scheduleWeeklyPlan(input: {
   const usedByDay = new Map<string, number>()
   const items: PlanItem[] = []
   let windowIndex = 0
+  const horizonEnd = windows.at(-1)?.endsAt ?? new Date(notBefore.getTime() + (input.horizonDays ?? 7) * 86_400_000)
 
   for (const { task, assessment } of input.rankedTasks) {
     let taskMinutesRemaining = task.estimatedMinutes
     while (taskMinutesRemaining >= 5 && windowIndex < windows.length && items.length < 100) {
       const window = windows[windowIndex]
       if (!window) break
+      const deadline = task.dueAt ? new Date(task.dueAt) : undefined
+      if (deadline && window.cursor >= deadline) break
       const dailyRemaining = input.preferences.dailyMinutes - (usedByDay.get(window.localDayKey) ?? 0)
-      const windowRemaining = Math.floor((window.endsAt.getTime() - window.cursor.getTime()) / 60_000)
+      const effectiveWindowEnd = deadline && deadline < window.endsAt ? deadline : window.endsAt
+      const windowRemaining = Math.floor((effectiveWindowEnd.getTime() - window.cursor.getTime()) / 60_000)
       const minutes = Math.min(taskMinutesRemaining, sessionLimit, dailyRemaining, windowRemaining)
 
       if (minutes < 5) {
@@ -250,8 +416,24 @@ export function scheduleWeeklyPlan(input: {
         windowIndex += 1
       }
     }
-    if (windowIndex >= windows.length || items.length >= 100) break
   }
 
-  return items
+  const schedulingWarnings = summarizeSchedulingWarnings(
+    input.rankedTasks.map(({ task }) => task),
+    items,
+    horizonEnd,
+  )
+
+  return { items, schedulingWarnings }
+}
+
+export function scheduleWeeklyPlan(input: {
+  rankedTasks: RankedTask[]
+  preferences: PlanningPreferences
+  busyBlocks: BusyBlock[]
+  startsAt?: string
+  horizonDays?: number
+  now?: Date
+}): PlanItem[] {
+  return scheduleWeeklyPlanWithReport(input).items
 }

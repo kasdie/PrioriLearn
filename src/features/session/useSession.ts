@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { prioriApi, type ApiSession } from '../../lib/api'
 
-type SessionApi = Pick<typeof prioriApi, 'bootstrap' | 'logout'>
+type SessionApi = Pick<typeof prioriApi, 'bootstrap' | 'logout'> & Partial<Pick<typeof prioriApi, 'updateLocale'>>
 
 type UseSessionOptions = {
   locale: 'vi' | 'en'
@@ -34,7 +34,7 @@ export function useSession({ locale, onLocaleChange, api = prioriApi }: UseSessi
       .catch(() => {
         if (!active) return
         setNotice(window.navigator.language.toLowerCase().startsWith('vi')
-          ? 'API dang chua phan hoi. Render co the can mot luc de khoi dong.'
+          ? 'API đang chưa phản hồi. Render có thể cần một lúc để khởi động.'
           : 'The API is not responding yet. Render may need a moment to wake up.')
       })
       .finally(() => {
@@ -49,7 +49,7 @@ export function useSession({ locale, onLocaleChange, api = prioriApi }: UseSessi
     const handleExpiredSession = () => {
       setSession(null)
       setNotice(localeRef.current === 'vi'
-        ? 'Phien dang nhap da het han. Dang nhap lai de tiep tuc ban nhap hien tai.'
+        ? 'Phiên đăng nhập đã hết hạn. Đăng nhập lại để tiếp tục bản nháp hiện tại.'
         : 'Your session expired. Sign in again to continue the current draft.')
     }
     window.addEventListener('priorilearn:session-expired', handleExpiredSession)
@@ -62,18 +62,34 @@ export function useSession({ locale, onLocaleChange, api = prioriApi }: UseSessi
       setNotice(undefined)
     } catch {
       setNotice(localeRef.current === 'vi'
-        ? 'Ban da thoat khoi workspace nay, nhung may chu chua xac nhan do mat ket noi.'
+        ? 'Bạn đã thoát khỏi không gian học này, nhưng máy chủ chưa xác nhận do mất kết nối.'
         : 'You left this workspace, but the server could not confirm logout because the connection failed.')
     } finally {
       setSession(null)
     }
   }, [api])
 
+  const changeLocale = useCallback(async (nextLocale: 'vi' | 'en') => {
+    onLocaleChange(nextLocale)
+    if (!session || !api.updateLocale) return
+    try {
+      const updated = await api.updateLocale(nextLocale)
+      setSession(updated)
+      setNotice(undefined)
+    } catch {
+      onLocaleChange(session.user.locale)
+      setNotice(nextLocale === 'vi'
+        ? 'Chưa thể lưu ngôn ngữ. PrioriLearn đã giữ lựa chọn trước đó.'
+        : 'Language could not be saved. PrioriLearn kept your previous choice.')
+    }
+  }, [api, onLocaleChange, session])
+
   return {
     session,
     checking,
     notice,
     authenticate,
+    changeLocale,
     logout,
     clearNotice: () => setNotice(undefined),
   }

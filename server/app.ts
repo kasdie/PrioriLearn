@@ -25,6 +25,7 @@ import {
   ReplanApprovalInputSchema,
   TaskCreateInputSchema,
   TaskPatchInputSchema,
+  UserLocaleInputSchema,
   type ConsentAudit,
   type AuthActionPurpose,
   type ImportDraft,
@@ -43,7 +44,12 @@ import { InvalidGoogleIdentityError, type GoogleTokenVerifier, verifyGoogleIdTok
 import { parseIcsPreview } from './services/ics.js'
 import { assessPriority } from './services/priority.js'
 import { processLifecycleJobs } from './services/purge.js'
-import { schedulePlan, scheduleWeeklyPlan } from './services/scheduler.js'
+import {
+  schedulePlan,
+  scheduleWeeklyPlanWithReport,
+  summarizeSchedulingWarnings,
+  validatePlanItems,
+} from './services/scheduler.js'
 import { LocalObjectStore, SupabaseObjectStore, type ObjectStore } from './storage.js'
 
 type AuthContext = AuthSession
@@ -151,6 +157,17 @@ function encodeDocumentCursor(cursor: { createdAt: string; id: string } | undefi
   return cursor ? Buffer.from(JSON.stringify(cursor)).toString('base64url') : undefined
 }
 
+function decodeTaskCursor(value: unknown): { createdAt: string; id: string } | undefined {
+  try {
+    return decodeDocumentCursor(value)
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'INVALID_CURSOR') {
+      throw new ApiError(400, 'INVALID_CURSOR', 'The task cursor is invalid.')
+    }
+    throw error
+  }
+}
+
 function publicUser(user: AuthContext['user']) {
   const {
     passwordHash: _passwordHash,
@@ -221,13 +238,19 @@ function secretsMatch(supplied: string | undefined, expected: string | undefined
   return suppliedBytes.length === expectedBytes.length && timingSafeEqual(suppliedBytes, expectedBytes)
 }
 
-function createAuthRateLimit(options: { maxAttempts: number; windowMs: number }): RequestHandler {
+function createRateLimit(options: {
+  maxAttempts: number
+  windowMs: number
+  code: string
+  message: string
+  key: (request: Request, response: Response) => string
+}): RequestHandler {
   const buckets = new Map<string, { attempts: number; resetsAt: number }>()
   const maxBuckets = 5_000
 
   return (request, response, next) => {
     const now = Date.now()
-    const key = `${request.path}:${request.ip ?? request.socket.remoteAddress ?? 'unknown'}`
+    const key = options.key(request, response)
     let bucket = buckets.get(key)
 
     if (!bucket || bucket.resetsAt <= now) {
@@ -253,8 +276,8 @@ function createAuthRateLimit(options: { maxAttempts: number; windowMs: number })
       response.setHeader('Retry-After', String(retryAfterSeconds))
       response.status(429).json({
         error: {
-          code: 'AUTH_RATE_LIMITED',
-          message: 'Too many authentication attempts. Wait before trying again.',
+          code: options.code,
+          message: options.message,
         },
       })
       return
@@ -350,9 +373,19 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     })
   })
   app.use(express.json({ limit: '1mb' }))
-  const authRateLimit = createAuthRateLimit({
+  const authRateLimit = createRateLimit({
     maxAttempts: config.authRateLimitMax,
     windowMs: config.authRateLimitWindowMs,
+    code: 'AUTH_RATE_LIMITED',
+    message: 'Too many authentication attempts. Wait before trying again.',
+    key: (request) => `${request.path}:${request.ip ?? request.socket.remoteAddress ?? 'unknown'}`,
+  })
+  const aiRateLimit = createRateLimit({
+    maxAttempts: config.aiRateLimitMax,
+    windowMs: config.aiRateLimitWindowMs,
+    code: 'AI_RATE_LIMITED',
+    message: 'Too many AI requests. Wait before trying again.',
+    key: (_request, response) => `ai:${(response.locals.auth as AuthContext | undefined)?.user.id ?? 'anonymous'}`,
   })
 
   const uploadDocument = multer({
@@ -528,6 +561,15 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ user: publicUser(user), tenant })
   })
 
+  app.patch('/api/me', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
+    const input = parseBody(UserLocaleInputSchema, request.body)
+    const updated = await repository.updateUserLocale(tenant.id, user.id, input.locale)
+    if (!updated) throw new ApiError(404, 'USER_NOT_FOUND', 'User was not found.')
+    response.locals.auth = { user: updated, tenant }
+    response.json({ user: publicUser(updated), tenant })
+  }))
+
   app.post('/api/auth/logout', requireAuth, asyncRoute(async (_request, response) => {
     await repository.revokeSession(response.locals.sessionToken as string)
     clearSessionCookie(response, config)
@@ -624,9 +666,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     })
   }))
 
-  app.get('/api/tasks', requireAuth, asyncRoute(async (_request, response) => {
+  app.get('/api/tasks', requireAuth, asyncRoute(async (request, response) => {
     const { tenant } = getAuth(response)
-    response.json({ tasks: await repository.listTasks(tenant.id), courses: await repository.listCourses(tenant.id) })
+    const query = parseBody(z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().optional() }), request.query)
+    const page = await repository.listTasksPage(tenant.id, { limit: query.limit, before: decodeTaskCursor(query.cursor) })
+    response.json({
+      tasks: page.items,
+      courses: await repository.listCourses(tenant.id),
+      availabilityBlocks: await repository.listAvailabilityBlocks(tenant.id),
+      nextCursor: encodeDocumentCursor(page.next),
+    })
   }))
 
   app.post('/api/courses', requireAuth, asyncRoute(async (request, response) => {
@@ -731,7 +780,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ document })
   }))
 
-  app.post('/api/documents/:documentId/extract', requireAuth, asyncRoute(async (request, response) => {
+  app.post('/api/documents/:documentId/extract', requireAuth, aiRateLimit, asyncRoute(async (request, response) => {
     const { tenant } = getAuth(response)
     const document = await repository.getDocument(tenant.id, routeParam(request.params.documentId))
     if (!document) throw new ApiError(404, 'DOCUMENT_NOT_FOUND', 'Document was not found.')
@@ -822,19 +871,46 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ preferences })
   }))
 
-  app.post('/api/planning/chat', requireAuth, asyncRoute(async (request, response) => {
+  app.post('/api/planning/chat', requireAuth, aiRateLimit, asyncRoute(async (request, response) => {
     const { tenant } = getAuth(response)
     const input = parseBody(PlanningChatInputSchema, request.body)
+    const now = new Date()
+    const courses = new Map((await repository.listCourses(tenant.id)).map((course) => [course.id, course]))
     const confirmedTasks = (await repository.listTasks(tenant.id))
       .filter((task) => task.status === 'confirmed')
       .slice(0, 50)
-      .map(({ title, dueAt, estimatedMinutes }) => ({ title, dueAt, estimatedMinutes }))
+      .flatMap((task) => {
+        const course = courses.get(task.courseId)
+        if (!course) return []
+        const assessment = assessPriority(task, course, now, input.locale)
+        return [{
+          taskId: task.id,
+          title: task.title,
+          courseName: course.name,
+          dueAt: task.dueAt,
+          estimatedMinutes: task.estimatedMinutes,
+          priorityScore: assessment.score,
+          costOfDelay: assessment.costOfDelay.message,
+        }]
+      })
+    const currentPlan = await repository.getCurrentPlan(tenant.id)
+    const plan = currentPlan.pending ?? currentPlan.active
+    const taskTitles = new Map(confirmedTasks.map((task) => [task.taskId, task.title]))
     const reply = await aiProvider.draftPlanningPreferences({
       locale: input.locale,
       message: input.message,
       history: input.history,
       draft: input.draft,
       confirmedTasks,
+      busyBlocks: (await repository.listAvailabilityBlocks(tenant.id)).map(({ title, startsAt, endsAt }) => ({ title, startsAt, endsAt })),
+      currentPlanItems: (plan?.items ?? []).map((item) => ({
+        taskId: item.taskId,
+        title: taskTitles.get(item.taskId) ?? (input.locale === 'vi' ? 'Nhiệm vụ đã xác nhận' : 'Confirmed task'),
+        startsAt: item.startsAt,
+        endsAt: item.endsAt,
+        minutes: item.minutes,
+      })),
+      now: now.toISOString(),
     })
     response.json({
       reply: {
@@ -855,7 +931,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const { user, tenant } = getAuth(response)
     const input = parseBody(PlanGenerateInputSchema, request.body)
     const current = await repository.getCurrentPlan(tenant.id)
-    if (current.pending) {
+    if (current.pending && !input.replacePending) {
       response.json({ plan: current.pending, requiresApproval: true, reused: true })
       return
     }
@@ -871,14 +947,15 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const repositoryBusyBlocks = await repository.listAvailabilityBlocks(tenant.id)
     const planningPreferences = await repository.getPlanningPreferences(tenant.id, user.id)
     const busyBlocks = [...repositoryBusyBlocks, ...input.busyBlocks]
-    const items = planningPreferences?.windows.length
-      ? scheduleWeeklyPlan({
+    const weeklyResult = planningPreferences?.windows.length
+      ? scheduleWeeklyPlanWithReport({
         rankedTasks,
         startsAt: input.startsAt,
         preferences: { ...planningPreferences, locale: input.locale ?? planningPreferences.locale },
         busyBlocks,
       })
-      : schedulePlan({
+      : undefined
+    const items = weeklyResult?.items ?? schedulePlan({
         rankedTasks,
         startsAt: input.startsAt,
         availableMinutes: input.availableMinutes,
@@ -887,13 +964,17 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         locale: input.locale ?? user.locale,
       })
     if (items.length === 0) throw new ApiError(409, 'NO_SCHEDULABLE_TASKS', 'No confirmed tasks fit the available time.')
-    const plan = await repository.createPlanProposal(tenant.id, {
+    const proposalInput = {
       items,
+      schedulingWarnings: weeklyResult?.schedulingWarnings ?? [],
       rationale: input.locale === 'vi' || (!input.locale && user.locale === 'vi')
         ? `Kế hoạch ${planningPreferences?.coachMode ?? input.coachMode} được xếp theo tác động học tập, rủi ro, chi phí trì hoãn, mục tiêu và khả năng bắt đầu.`
         : `A ${planningPreferences?.coachMode ?? input.coachMode} plan ranked by academic impact, failure risk, cost of delay, goal alignment, and actionability.`,
       previousPlanId: current.active?.id,
-    })
+    }
+    const plan = current.pending
+      ? await repository.replacePlanProposal(tenant.id, current.pending.id, current.pending.version, proposalInput)
+      : await repository.createPlanProposal(tenant.id, proposalInput)
     response.status(201).json({ plan, requiresApproval: true })
   }))
 
@@ -905,12 +986,31 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   app.put('/api/plans/:planId/proposal', requireAuth, asyncRoute(async (request, response) => {
     const { user, tenant } = getAuth(response)
     const input = parseBody(PlanEditInputSchema, request.body)
+    const currentPlan = await repository.getPlan(tenant.id, routeParam(request.params.planId))
+    if (!currentPlan) throw new ApiError(404, 'PLAN_NOT_FOUND', 'Plan was not found.')
+    const tasks = await repository.listTasks(tenant.id)
+    const busyBlocks = await repository.listAvailabilityBlocks(tenant.id)
+    const planningPreferences = await repository.getPlanningPreferences(tenant.id, user.id)
+    const items = input.items.map((item) => ({ ...item, id: item.id ?? randomUUID() }))
+    const validationIssues = validatePlanItems({ items, tasks, busyBlocks, preferences: planningPreferences })
+    if (validationIssues.length > 0) {
+      throw new ApiError(409, 'INVALID_PLAN_SCHEDULE', 'The edited plan conflicts with confirmed tasks or availability.', { issues: validationIssues })
+    }
+    const latestEnd = Math.max(Date.now() + 7 * 86_400_000, ...items.map((item) => Date.parse(item.endsAt)))
+    const schedulingWarnings = planningPreferences
+      ? summarizeSchedulingWarnings(
+        tasks.filter((task) => task.status === 'confirmed'),
+        items,
+        new Date(latestEnd),
+      )
+      : currentPlan.schedulingWarnings
     const plan = await repository.replacePlanProposal(
       tenant.id,
       routeParam(request.params.planId),
       input.expectedVersion,
       {
-        items: input.items.map((item) => ({ ...item, id: item.id ?? randomUUID() })),
+        items,
+        schedulingWarnings,
         rationale: input.locale === 'vi' || (!input.locale && user.locale === 'vi')
           ? 'Đề xuất do sinh viên chỉnh sửa, đã kiểm tra thời gian và thứ tự.'
           : 'Student-edited proposal with schedule and order validation.',
@@ -920,8 +1020,33 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }))
 
   app.post('/api/plans/:planId/approve', requireAuth, asyncRoute(async (request, response) => {
-    const { tenant } = getAuth(response)
+    const { user, tenant } = getAuth(response)
     const input = parseBody(PlanApprovalInputSchema, request.body)
+    const candidate = await repository.getPlan(tenant.id, routeParam(request.params.planId))
+    if (!candidate) throw new ApiError(404, 'PLAN_NOT_FOUND', 'Plan was not found.')
+    const tasks = await repository.listTasks(tenant.id)
+    const busyBlocks = await repository.listAvailabilityBlocks(tenant.id)
+    const planningPreferences = await repository.getPlanningPreferences(tenant.id, user.id)
+    const validationIssues = validatePlanItems({
+      items: candidate.items,
+      tasks,
+      busyBlocks,
+      preferences: planningPreferences,
+    })
+    if (validationIssues.length > 0) {
+      throw new ApiError(409, 'INVALID_PLAN_SCHEDULE', 'The plan conflicts with current tasks or availability. Generate a fresh proposal.', { issues: validationIssues })
+    }
+    const latestEnd = Math.max(Date.now() + 7 * 86_400_000, ...candidate.items.map((item) => Date.parse(item.endsAt)))
+    const schedulingWarnings = planningPreferences
+      ? summarizeSchedulingWarnings(
+        tasks.filter((task) => task.status === 'confirmed'),
+        candidate.items,
+        new Date(latestEnd),
+      )
+      : candidate.schedulingWarnings
+    if (schedulingWarnings.length > 0) {
+      throw new ApiError(409, 'PLAN_HAS_UNSCHEDULED_WORK', 'Resolve the unscheduled work before approving this plan.', { warnings: schedulingWarnings })
+    }
     const approved = await repository.approvePlan(
       tenant.id,
       routeParam(request.params.planId),
@@ -931,7 +1056,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.json({ plan: approved })
   }))
 
-  app.post('/api/check-ins', requireAuth, asyncRoute(async (request, response) => {
+  app.post('/api/check-ins', requireAuth, aiRateLimit, asyncRoute(async (request, response) => {
     const { user, tenant } = getAuth(response)
     const input = parseBody(CheckInInputSchema, request.body)
     const plan = await repository.getPlan(tenant.id, input.planId)
@@ -975,7 +1100,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }))
 
   app.post('/api/replan-proposals/:proposalId/approve', requireAuth, asyncRoute(async (request, response) => {
-    const { tenant } = getAuth(response)
+    const { user, tenant } = getAuth(response)
     const input = parseBody(ReplanApprovalInputSchema, request.body)
     const proposal = await repository.getReplanProposal(tenant.id, routeParam(request.params.proposalId))
     if (!proposal) throw new ApiError(404, 'REPLAN_NOT_FOUND', 'Replan proposal was not found.')
@@ -986,9 +1111,20 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     }
     const current = await repository.getCurrentPlan(tenant.id)
     if (current.pending) throw new ApiError(409, 'PENDING_PLAN_REVIEW_REQUIRED', 'Review the existing pending plan before approving a replan.')
+    const tasks = await repository.listTasks(tenant.id)
+    const validationIssues = validatePlanItems({
+      items: proposal.proposedItems,
+      tasks,
+      busyBlocks: await repository.listAvailabilityBlocks(tenant.id),
+      preferences: await repository.getPlanningPreferences(tenant.id, user.id),
+    })
+    if (validationIssues.length > 0) {
+      throw new ApiError(409, 'INVALID_PLAN_SCHEDULE', 'The replan conflicts with confirmed tasks or availability.', { issues: validationIssues })
+    }
     const proposedPlan = await repository.createPlanProposal(tenant.id, {
       previousPlanId: basePlan.id,
       items: proposal.proposedItems,
+      schedulingWarnings: basePlan.schedulingWarnings,
       rationale: proposal.rationale,
     })
     const approvedPlan = await repository.approvePlan(

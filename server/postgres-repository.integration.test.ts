@@ -190,7 +190,8 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
 
   test('concurrent plan transitions preserve one pending and one active version', async () => {
     const alice = await repository.findUserByEmail('alice@example.test')
-    if (!alice) throw new Error('Test user was not created.')
+    const bob = await repository.findUserByEmail('bob@example.test')
+    if (!alice || !bob) throw new Error('Test users were not created.')
     const course = await repository.createCourse(alice.tenantId, {
       code: 'PLAN101', name: 'Plan transactions', currentScore: 60, targetScore: 80,
     })
@@ -218,6 +219,25 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
       }],
     }
 
+    const bobCourse = await repository.createCourse(bob.tenantId, {
+      code: 'FOREIGN101', name: 'Foreign tenant task', currentScore: null, targetScore: null,
+    })
+    const bobTask = await repository.createTask(bob.tenantId, {
+      courseId: bobCourse.id,
+      title: 'Must not cross tenant boundary',
+      dueAt: null,
+      gradeWeight: null,
+      estimatedMinutes: 30,
+      status: 'confirmed',
+      sourceKind: 'manual',
+      confidence: 1,
+      evidence: [],
+    })
+    await expect(repository.createPlanProposal(alice.tenantId, {
+      ...input,
+      items: input.items.map((item) => ({ ...item, taskId: bobTask.id })),
+    })).rejects.toMatchObject({ code: '23503' })
+
     const proposals = await Promise.all([
       repository.createPlanProposal(alice.tenantId, input),
       repository.createPlanProposal(alice.tenantId, input),
@@ -233,11 +253,16 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
 
     const pending = await repository.createPlanProposal(alice.tenantId, {
       ...input,
-      items: input.items.map((item) => ({ ...item, id: randomUUID() })),
+      items: proposal.items,
     })
+    const replacement = await repository.replacePlanProposal(alice.tenantId, pending.id, pending.version, {
+      ...input,
+      items: pending.items,
+    })
+    expect(replacement.items.map((item) => item.id)).not.toEqual(pending.items.map((item) => item.id))
     const current = await repository.getCurrentPlan(alice.tenantId)
     expect(current.active?.id).toBe(proposal.id)
-    expect(current.pending?.id).toBe(pending.id)
+    expect(current.pending?.id).toBe(replacement.id)
     expect(current.pending?.version).toBeGreaterThan(current.active?.version ?? 0)
   })
 

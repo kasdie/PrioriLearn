@@ -20,6 +20,16 @@ const plan: ApiPlan = {
 }
 
 describe('PlanProposalEditor', () => {
+  it('does not crash while a date or duration input is temporarily empty', () => {
+    render(<PlanProposalEditor locale="en" plan={plan} taskName={() => 'Assignment'} onSaved={vi.fn()} api={{ editPlan: vi.fn() }} />)
+
+    expect(() => {
+      fireEvent.change(screen.getByLabelText('Start Assignment'), { target: { value: '' } })
+      fireEvent.change(screen.getByLabelText('Minutes Assignment'), { target: { value: '' } })
+    }).not.toThrow()
+    expect(screen.getByLabelText('Minutes Assignment')).toHaveValue(45)
+  })
+
   it('retains an edited draft when the versioned save fails', async () => {
     const api = { editPlan: vi.fn().mockRejectedValue(new Error('Version conflict.')) }
     render(<PlanProposalEditor locale="en" plan={plan} taskName={() => 'Assignment'} onSaved={vi.fn()} api={api} />)

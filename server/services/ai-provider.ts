@@ -32,7 +32,18 @@ export type PlanningConversationInput = {
   message: string
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   draft: PlanningPreferenceDraft
-  confirmedTasks: Array<{ title: string; dueAt: string | null; estimatedMinutes: number }>
+  confirmedTasks: Array<{
+    taskId: string
+    title: string
+    courseName: string
+    dueAt: string | null
+    estimatedMinutes: number
+    priorityScore: number
+    costOfDelay: string
+  }>
+  busyBlocks: Array<{ title: string; startsAt: string; endsAt: string }>
+  currentPlanItems: Array<{ taskId: string; title: string; startsAt: string; endsAt: string; minutes: number }>
+  now: string
 }
 
 export interface AiProvider {
@@ -96,8 +107,16 @@ export class MockAiProvider implements AiProvider {
   async draftPlanningPreferences(input: PlanningConversationInput): Promise<PlanningAssistantReply> {
     const missingInformation: PlanningAssistantReply['missingInformation'] = []
     if (input.draft.windows.length === 0) missingInformation.push('availability')
+    const nextBlocks = input.currentPlanItems
+      .filter((item) => Date.parse(item.endsAt) >= Date.parse(input.now))
+      .slice(0, 3)
+    const agenda = nextBlocks.map((item) => `${item.title} (${item.startsAt}, ${item.minutes} min)`).join('; ')
     return {
-      message: input.locale === 'vi'
+      message: agenda
+        ? input.locale === 'vi'
+          ? `Lịch sắp tới của bạn: ${agenda}. Đây là kế hoạch hiện đang được lưu; mình chỉ thay đổi khi bạn lưu lịch rảnh và duyệt đề xuất mới.`
+          : `Your upcoming agenda: ${agenda}. This is the currently saved plan; it only changes after you save availability and approve a new proposal.`
+        : input.locale === 'vi'
         ? input.draft.windows.length === 0
           ? 'Mình đã ghi nhận mục tiêu của bạn. Hãy chọn ít nhất một khung giờ rảnh bên dưới; mình sẽ chỉ dùng những khung bạn xác nhận để xếp lịch tuần.'
           : 'Mình đã đối chiếu khối lượng công việc với các khung giờ đang chọn. Bạn có thể chỉnh cường độ hoặc thời lượng mỗi ngày trước khi lưu.'
@@ -167,6 +186,8 @@ export class OpenAiProvider implements AiProvider {
           content: [
             `You are a study-planning intake assistant. Respond entirely in ${responseLanguage}, except for user-provided task titles.`,
             'Ask concise questions about free time, preferred intensity, and realistic daily study capacity.',
+            'You may answer agenda questions using currentPlanItems and busyBlocks. Clearly distinguish an approved/current plan from a draft suggestion.',
+            'Use priorityScore, costOfDelay, courseName, and deadlines when explaining why a task should happen sooner.',
             'Return a complete suggestion every turn. Preserve existing draft values unless the user explicitly changes them.',
             'A study window uses dayOfWeek 0=Sunday through 6=Saturday and local minutes after midnight.',
             'Never invent free time. If availability is not explicit, keep windows unchanged and include availability in missingInformation.',

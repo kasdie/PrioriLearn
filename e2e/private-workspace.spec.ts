@@ -129,10 +129,14 @@ test('system copy follows the selected Vietnamese or English mode', async ({ pag
   await page.getByRole('button', { name: 'EN', exact: true }).click()
   await page.getByRole('button', { name: 'Use demo workspace' }).click()
   await page.getByRole('button', { name: 'VI', exact: true }).click()
-  await page.getByRole('button', { name: 'Cố vấn', exact: true }).click()
+  await page.getByRole('button', { name: 'Tại sao là việc này?', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Điều gì khiến việc này quan trọng?' })).toBeVisible()
   await expect(page.getByText('Academic impact')).toHaveCount(0)
   await expect(page.getByText('Cost of delay')).toHaveCount(0)
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Hôm nay', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Tại sao là việc này?', exact: true }).click()
 
   await page.getByRole('button', { name: 'EN', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Why does this matter now?' })).toBeVisible()

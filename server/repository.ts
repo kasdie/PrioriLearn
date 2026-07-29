@@ -36,6 +36,7 @@ export type CurrentPlan = {
 
 export type PlanProposalInput = {
   items: StudyPlan['items']
+  schedulingWarnings?: StudyPlan['schedulingWarnings']
   rationale: string
   previousPlanId?: string
 }
@@ -77,6 +78,7 @@ export interface Repository {
   findUserByEmail(email: string): Awaitable<User | undefined>
   findUserByGoogleSubject(googleSubject: string): Awaitable<User | undefined>
   getUser(tenantId: string, userId: string): Awaitable<User | undefined>
+  updateUserLocale(tenantId: string, userId: string, locale: User['locale']): Awaitable<User | undefined>
   linkGoogleSubject(tenantId: string, userId: string, googleSubject: string): Awaitable<User | undefined>
   markEmailVerified(tenantId: string, userId: string): Awaitable<User | undefined>
   createAuthActionToken(user: User, purpose: AuthActionPurpose, tokenHash: string, expiresAt: string): Awaitable<void>
@@ -93,6 +95,7 @@ export interface Repository {
   createTask(tenantId: string, input: Pick<Task, 'courseId' | 'title' | 'dueAt' | 'gradeWeight' | 'estimatedMinutes' | 'status' | 'sourceKind' | 'confidence' | 'evidence'> & { sourceDocumentId?: string; sourceImportDraftId?: string }): Awaitable<Task>
   getTask(tenantId: string, taskId: string): Awaitable<Task | undefined>
   listTasks(tenantId: string): Awaitable<Task[]>
+  listTasksPage(tenantId: string, input: DocumentPageInput): Awaitable<CursorPage<Task>>
   updateTask(tenantId: string, taskId: string, patch: Partial<Task>): Awaitable<Task | undefined>
   beginDocumentUpload(document: SourceDocument): Awaitable<DocumentUploadResult>
   saveDocument(document: SourceDocument): Awaitable<SourceDocument>
@@ -393,6 +396,14 @@ export class InMemoryRepository implements Repository {
     return user?.tenantId === tenantId && !this.deletingTenants.has(tenantId) ? user : undefined
   }
 
+  updateUserLocale(tenantId: string, userId: string, locale: User['locale']): User | undefined {
+    const user = this.getUser(tenantId, userId)
+    if (!user) return undefined
+    const updated = { ...user, locale }
+    this.users.set(user.id, updated)
+    return updated
+  }
+
   getTenant(tenantId: string): Tenant | undefined {
     return this.tenants.get(tenantId)
   }
@@ -469,6 +480,18 @@ export class InMemoryRepository implements Repository {
 
   listTasks(tenantId: string): Task[] {
     return [...this.tasks.values()].filter((task) => task.tenantId === tenantId)
+  }
+
+  listTasksPage(tenantId: string, input: DocumentPageInput): CursorPage<Task> {
+    const ordered = this.listTasks(tenantId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .filter((task) => !input.before
+        || task.createdAt < input.before.createdAt
+        || (task.createdAt === input.before.createdAt && task.id < input.before.id))
+    const results = ordered.slice(0, input.limit + 1)
+    const items = results.slice(0, input.limit)
+    const last = items.at(-1)
+    return { items, next: results.length > input.limit && last ? { createdAt: last.createdAt, id: last.id } : undefined }
   }
 
   updateTask(tenantId: string, taskId: string, patch: Partial<Task>): Task | undefined {
@@ -787,7 +810,8 @@ export class InMemoryRepository implements Repository {
       version: this.nextPlanVersion(tenantId),
       status: 'proposed',
       previousPlanId: input.previousPlanId ?? current.active?.id,
-      items: input.items,
+      items: input.items.map((item) => ({ ...item, id: randomUUID() })),
+      schedulingWarnings: input.schedulingWarnings ?? [],
       rationale: input.rationale,
       createdAt: nowIso(),
     }
@@ -808,7 +832,8 @@ export class InMemoryRepository implements Repository {
       version: this.nextPlanVersion(tenantId),
       status: 'proposed',
       previousPlanId: current.id,
-      items: input.items,
+      items: input.items.map((item) => ({ ...item, id: randomUUID() })),
+      schedulingWarnings: input.schedulingWarnings ?? [],
       rationale: input.rationale,
       createdAt: nowIso(),
     }

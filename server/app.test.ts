@@ -49,6 +49,26 @@ describe('PrioriLearn API', () => {
     expect(response.headers['x-request-id']).toBe('test-request-123')
   })
 
+  it('shares one AI request quota across AI-backed routes for each account', async () => {
+    const limited = await createApplication({
+      config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory', aiRateLimitMax: 2 },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      errorReporter: new MemoryErrorReporter(),
+    })
+    const demo = await request(limited.app).post('/api/auth/demo').expect(200)
+    const limitedCookie = sessionCookie(demo)
+
+    await request(limited.app).post('/api/planning/chat').set({ Cookie: limitedCookie }).send({}).expect(400)
+    await request(limited.app).post('/api/check-ins').set({ Cookie: limitedCookie }).send({}).expect(400)
+    const blocked = await request(limited.app)
+      .post('/api/documents/00000000-0000-4000-8000-000000000001/extract')
+      .set({ Cookie: limitedCookie })
+      .expect(429)
+    expect(blocked.body.error.code).toBe('AI_RATE_LIMITED')
+    expect(blocked.headers['retry-after']).toBeDefined()
+  })
+
   it('reports unexpected API failures with only safe correlation metadata', async () => {
     vi.spyOn(context.repository, 'listCourses').mockRejectedValueOnce(new Error('Database request failed'))
 
@@ -763,6 +783,21 @@ describe('PrioriLearn API', () => {
     await request(context.app).get('/api/documents?cursor=bad-cursor').set(authorized()).expect(400)
   })
 
+  it('returns tasks through bounded cursor pages', async () => {
+    const first = await request(context.app).get('/api/tasks?limit=1').set(authorized()).expect(200)
+    expect(first.body.tasks).toHaveLength(1)
+    expect(first.body.nextCursor).toEqual(expect.any(String))
+
+    const second = await request(context.app)
+      .get(`/api/tasks?limit=1&cursor=${encodeURIComponent(first.body.nextCursor)}`)
+      .set(authorized())
+      .expect(200)
+    expect(second.body.tasks).toHaveLength(1)
+    expect(second.body.tasks[0].id).not.toBe(first.body.tasks[0].id)
+    await request(context.app).get('/api/tasks?limit=101').set(authorized()).expect(400)
+    await request(context.app).get('/api/tasks?cursor=bad-cursor').set(authorized()).expect(400)
+  })
+
   it('does not apply a plan or replan without explicit versioned approval', async () => {
     const generated = await request(context.app)
       .post('/api/plans/generate')
@@ -845,7 +880,8 @@ describe('PrioriLearn API', () => {
     const editedItems = firstProposal.items.map((item: { startsAt: string; endsAt: string; minutes: number }, index: number) => {
       if (index !== 0) return item
       const startsAt = new Date(new Date(item.startsAt).getTime() + 15 * 60_000).toISOString()
-      return { ...item, startsAt, endsAt: new Date(new Date(startsAt).getTime() + item.minutes * 60_000).toISOString() }
+      const minutes = item.minutes - 15
+      return { ...item, startsAt, minutes, endsAt: new Date(new Date(startsAt).getTime() + minutes * 60_000).toISOString() }
     })
     const edited = await request(context.app)
       .put(`/api/plans/${firstProposal.id}/proposal`)
@@ -854,6 +890,8 @@ describe('PrioriLearn API', () => {
       .expect(201)
     expect(edited.body.plan.version).toBe(firstProposal.version + 1)
     expect(edited.body.plan.id).not.toBe(firstProposal.id)
+    expect(edited.body.plan.items.map((item: { id: string }) => item.id))
+      .not.toEqual(firstProposal.items.map((item: { id: string }) => item.id))
 
     const stale = await request(context.app)
       .put(`/api/plans/${edited.body.plan.id}/proposal`)
@@ -916,6 +954,83 @@ describe('PrioriLearn API', () => {
       .expect(404)
     const demoTasks = await request(context.app).get('/api/tasks').set(authorized()).expect(200)
     expect(demoTasks.body.tasks.some((task: { id: string }) => task.id === secondTask.id)).toBe(false)
+
+    const generated = await request(context.app)
+      .post('/api/plans/generate')
+      .set(authorized())
+      .send({ startsAt: '2026-07-16T09:00:00.000Z', availableMinutes: 90, coachMode: 'discipline' })
+      .expect(201)
+    const foreignTaskItems = generated.body.plan.items.map((item: { taskId: string }, index: number) => (
+      index === 0 ? { ...item, taskId: secondTask.id } : item
+    ))
+    const rejected = await request(context.app)
+      .put(`/api/plans/${generated.body.plan.id}/proposal`)
+      .set(authorized())
+      .send({ expectedVersion: generated.body.plan.version, items: foreignTaskItems })
+      .expect(409)
+    expect(rejected.body.error.code).toBe('INVALID_PLAN_SCHEDULE')
+    expect(rejected.body.error.details.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'TASK_NOT_FOUND', taskId: secondTask.id }),
+    ]))
+  })
+
+  it('persists the selected locale in the authenticated account', async () => {
+    const updated = await request(context.app)
+      .patch('/api/me')
+      .set(authorized())
+      .send({ locale: 'en' })
+      .expect(200)
+    expect(updated.body.user.locale).toBe('en')
+
+    const restored = await request(context.app).get('/api/auth/session').set(authorized()).expect(200)
+    expect(restored.body.session.user.locale).toBe('en')
+  })
+
+  it('does not approve a weekly proposal while work is still unscheduled', async () => {
+    const user = await context.repository.getDemoUser()
+    const task = (await context.repository.listTasks(user.tenantId))[0]
+    if (!task) throw new Error('Demo task was not created.')
+    const plan = await context.repository.createPlanProposal(user.tenantId, {
+      items: [{
+        id: 'temporary-item-id', taskId: task.id, startsAt: '2026-07-16T09:00:00.000Z', endsAt: '2026-07-16T09:15:00.000Z',
+        minutes: 15, firstStep: 'Open the task.', rationale: 'Test capacity warning.',
+      }],
+      schedulingWarnings: [{ taskId: task.id, remainingMinutes: 30, reason: 'insufficient_capacity' }],
+      rationale: 'Incomplete weekly proposal.',
+    })
+
+    const approval = await request(context.app)
+      .post(`/api/plans/${plan.id}/approve`)
+      .set(authorized())
+      .send({ expectedVersion: plan.version })
+      .expect(409)
+    expect(approval.body.error.code).toBe('PLAN_HAS_UNSCHEDULED_WORK')
+  })
+
+  it('revalidates current availability immediately before plan approval', async () => {
+    const generated = await request(context.app)
+      .post('/api/plans/generate')
+      .set(authorized())
+      .send({ startsAt: '2026-07-16T09:00:00.000Z', availableMinutes: 90, coachMode: 'discipline' })
+      .expect(201)
+    const firstItem = generated.body.plan.items[0]
+    const user = await context.repository.getDemoUser()
+    await context.repository.createAvailabilityBlock(user.tenantId, {
+      title: 'New calendar conflict',
+      startsAt: firstItem.startsAt,
+      endsAt: firstItem.endsAt,
+      sourceKind: 'ics',
+    })
+
+    const approval = await request(context.app)
+      .post(`/api/plans/${generated.body.plan.id}/approve`)
+      .set(authorized())
+      .send({ expectedVersion: generated.body.plan.version })
+      .expect(409)
+    expect(approval.body.error.code).toBe('INVALID_PLAN_SCHEDULE')
+    expect(approval.body.error.details.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BUSY_TIME_CONFLICT', itemId: firstItem.id }),
+    ]))
   })
 
   it('imports ICS through a review draft and stores busy blocks only after confirmation', async () => {

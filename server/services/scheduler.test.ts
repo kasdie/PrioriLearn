@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PlanningPreferences, PriorityAssessment, Task } from '../domain/contracts.js'
-import { schedulePlan, scheduleWeeklyPlan } from './scheduler.js'
+import { schedulePlan, scheduleWeeklyPlan, scheduleWeeklyPlanWithReport, validatePlanItems } from './scheduler.js'
 
 const task = (id: string): Task => ({
   id,
@@ -145,5 +145,112 @@ describe('schedulePlan', () => {
     })
 
     expect(items[0]?.startsAt).toBe('2026-03-08T13:00:00.000Z')
+  })
+
+  it('never schedules past a deadline and reports the remaining work', () => {
+    const urgent = { ...task('urgent'), dueAt: '2026-06-15T18:20:00.000Z' }
+    const result = scheduleWeeklyPlanWithReport({
+      rankedTasks: [{ task: urgent, assessment: assessment('urgent') }],
+      preferences: preferences(),
+      busyBlocks: [],
+      startsAt: '2026-06-15T08:00:00.000Z',
+    })
+
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]?.endsAt).toBe('2026-06-15T18:20:00.000Z')
+    expect(result.schedulingWarnings).toEqual([{
+      taskId: 'urgent',
+      remainingMinutes: 40,
+      reason: 'deadline_too_close',
+    }])
+  })
+
+  it('reports tasks that do not fit instead of silently dropping them', () => {
+    const result = scheduleWeeklyPlanWithReport({
+      rankedTasks: [
+        { task: { ...task('one'), dueAt: null }, assessment: assessment('one') },
+        { task: { ...task('two'), dueAt: null }, assessment: assessment('two') },
+      ],
+      preferences: preferences({
+        dailyMinutes: 35,
+        windows: [{ dayOfWeek: 1, startMinute: 18 * 60, endMinute: 18 * 60 + 35 }],
+      }),
+      busyBlocks: [],
+      startsAt: '2026-06-15T08:00:00.000Z',
+    })
+
+    expect(result.items.map((item) => item.taskId)).toEqual(['one'])
+    expect(result.schedulingWarnings).toEqual([
+      { taskId: 'one', remainingMinutes: 25, reason: 'insufficient_capacity' },
+      { taskId: 'two', remainingMinutes: 60, reason: 'insufficient_capacity' },
+    ])
+  })
+
+  it('rejects foreign tasks, overlaps, busy time, and limits in edited plans', () => {
+    const first = {
+      id: 'item-one', taskId: 'one', startsAt: '2026-06-15T18:00:00.000Z', endsAt: '2026-06-15T18:35:00.000Z',
+      minutes: 35, firstStep: 'Start.', rationale: 'Test.',
+    }
+    const issues = validatePlanItems({
+      items: [
+        first,
+        { ...first, id: 'item-two', startsAt: '2026-06-15T18:20:00.000Z', endsAt: '2026-06-15T19:05:00.000Z', minutes: 45 },
+        { ...first, id: 'item-three', taskId: 'other-tenant' },
+      ],
+      tasks: [task('one')],
+      preferences: preferences({ dailyMinutes: 40 }),
+      busyBlocks: [{ startsAt: '2026-06-15T18:10:00.000Z', endsAt: '2026-06-15T18:15:00.000Z' }],
+    })
+
+    expect(issues.map((issue) => issue.code)).toEqual(expect.arrayContaining([
+      'TASK_NOT_FOUND',
+      'ITEM_OVERLAP',
+      'BUSY_TIME_CONFLICT',
+      'DAILY_LIMIT_EXCEEDED',
+      'SESSION_LIMIT_EXCEEDED',
+    ]))
+  })
+
+  it('accepts a session ending exactly at midnight inside a confirmed window', () => {
+    const lateTask = { ...task('late'), dueAt: null }
+    const issues = validatePlanItems({
+      items: [{
+        id: 'late-item',
+        taskId: lateTask.id,
+        startsAt: '2026-06-15T23:30:00.000Z',
+        endsAt: '2026-06-16T00:00:00.000Z',
+        minutes: 30,
+        firstStep: 'Start.',
+        rationale: 'Test.',
+      }],
+      tasks: [lateTask],
+      preferences: preferences({
+        windows: [{ dayOfWeek: 1, startMinute: 23 * 60, endMinute: 24 * 60 }],
+      }),
+      busyBlocks: [],
+    })
+
+    expect(issues).toEqual([])
+  })
+
+  it('detects overlap with an earlier long session, not only the adjacent item', () => {
+    const baseItem = {
+      taskId: 'one',
+      minutes: 30,
+      firstStep: 'Start.',
+      rationale: 'Test.',
+    }
+    const issues = validatePlanItems({
+      items: [
+        { ...baseItem, id: 'long', startsAt: '2026-06-15T18:00:00.000Z', endsAt: '2026-06-15T19:00:00.000Z', minutes: 60 },
+        { ...baseItem, id: 'nested', startsAt: '2026-06-15T18:10:00.000Z', endsAt: '2026-06-15T18:20:00.000Z', minutes: 10 },
+        { ...baseItem, id: 'later', startsAt: '2026-06-15T18:30:00.000Z', endsAt: '2026-06-15T19:00:00.000Z' },
+      ],
+      tasks: [task('one')],
+      busyBlocks: [],
+    })
+
+    expect(issues.filter((issue) => issue.code === 'ITEM_OVERLAP').map((issue) => issue.itemId))
+      .toEqual(['nested', 'later'])
   })
 })
