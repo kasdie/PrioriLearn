@@ -36,6 +36,7 @@ import { AuthActionScreen, type AuthAction } from './AuthActionScreen'
 import { AuthScreen } from './AuthScreen'
 import { useImportFlow } from './features/import/useImportFlow'
 import { ExtractionReviewEditor } from './features/import/ExtractionReviewEditor'
+import { WebPushSettings } from './features/notifications/WebPushSettings'
 import { LearnerProfilePanel } from './features/profile/LearnerProfilePanel'
 import { PlanProposalEditor } from './features/plan/PlanProposalEditor'
 import { usePlanFlow } from './features/plan/usePlanFlow'
@@ -1026,6 +1027,7 @@ function App() {
                     const granted = consentByPurpose[purpose]?.granted ?? false
                     return <label className="permission-row" key={purpose}><span><strong>{title}</strong><small>{detail}</small></span><input type="checkbox" checked={granted} disabled={settingsBusy} onChange={(event) => void updateConsent(purpose, event.target.checked)} /></label>
                   })}</div></section>
+                  <WebPushSettings locale={locale} />
                   <section className="settings-panel"><div className="settings-panel-heading"><div><h2>{locale === 'vi' ? 'Xuất dữ liệu' : 'Export your data'}</h2><p>{locale === 'vi' ? 'Tải một tệp JSON gồm dữ liệu có cấu trúc, kế hoạch và lịch sử đồng ý. Tệp gốc không được kèm theo.' : 'Download a JSON file with your structured data, plans, and consent history. Original files are not included.'}</p></div></div><button className="secondary-button" type="button" disabled={exportBusy} aria-busy={exportBusy} onClick={() => void downloadExport()}><Download size={17} /> {locale === 'vi' ? 'Tải bản xuất dữ liệu' : 'Download export'}</button></section>
                   <section className="settings-panel settings-danger"><div className="settings-panel-heading"><div><h2>{locale === 'vi' ? 'Xóa tài khoản' : 'Delete account'}</h2><p>{locale === 'vi' ? 'Nhập email để bắt đầu xóa. Phiên đăng nhập bị thu hồi ngay; tệp gốc và dữ liệu còn lại được dọn theo biên nhận.' : 'Enter your email to begin deletion. Sessions are revoked immediately; raw files and remaining data are cleaned through the deletion receipt.'}</p></div></div><label className="delete-confirmation">{locale === 'vi' ? `Nhập ${session.user.email} để xác nhận` : `Enter ${session.user.email} to confirm`}<input type="email" autoComplete="email" value={deletionConfirmation} onChange={(event) => setDeletionConfirmation(event.target.value)} /></label><button className="danger-button" type="button" disabled={deletionBusy || deletionConfirmation.trim().toLowerCase() !== session.user.email} aria-busy={deletionBusy} onClick={() => void requestAccountDeletion()}><Trash2 size={17} /> {locale === 'vi' ? 'Bắt đầu xóa tài khoản' : 'Start account deletion'}</button></section>
                 </div>

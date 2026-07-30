@@ -90,10 +90,23 @@ export type ApiMetrics = Record<string, number>
 
 export type ApiConsent = {
   id: string
-  purpose: 'product_terms' | 'calendar_read' | 'canvas_read' | 'email_digest' | 'research_metrics'
+  purpose: 'product_terms' | 'calendar_read' | 'canvas_read' | 'email_digest' | 'web_push' | 'research_metrics'
   granted: boolean
   source: 'onboarding' | 'settings' | 'connector' | 'api'
   createdAt: string
+}
+
+export type ApiWebPushStatus = {
+  configured: boolean
+  publicKey?: string
+  subscriptionCount: number
+  consentGranted: boolean
+}
+
+export type ApiWebPushSubscriptionInput = {
+  endpoint: string
+  expirationTime?: number | null
+  keys: { p256dh: string; auth: string }
 }
 
 export type ApiLearnerSignal = {
@@ -249,6 +262,8 @@ const localizedApiErrors: Record<string, { vi: string; en: string }> = {
   EXTRACTION_PENDING: { vi: 'Tệp vẫn đang được xử lý. Hãy thử lại sau ít phút.', en: 'The file is still processing. Try again shortly.' },
   AI_RATE_LIMITED: { vi: 'Bạn đã dùng hết lượt AI tạm thời. Hãy chờ một lúc rồi thử lại; dữ liệu hiện tại vẫn được giữ nguyên.', en: 'You have temporarily reached the AI request limit. Wait a little and try again; your current data is unchanged.' },
   UNAUTHENTICATED: { vi: 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.', en: 'Your session expired. Sign in again.' },
+  WEB_PUSH_NOT_CONFIGURED: { vi: 'Thông báo thiết bị chưa được cấu hình trên máy chủ.', en: 'Device notifications are not configured on the server.' },
+  PUSH_SUBSCRIPTION_IN_USE: { vi: 'Thiết bị này đang gắn với tài khoản khác. Hãy tắt thông báo ở tài khoản đó trước.', en: 'This device is linked to another account. Disable notifications there first.' },
 }
 
 export function userFacingError(error: unknown, locale: 'vi' | 'en', fallback: string): string {
@@ -394,6 +409,42 @@ export const prioriApi = {
       body: JSON.stringify({ ...input, source: 'settings' }),
     })
     return response.consent
+  },
+
+  webPushStatus(): Promise<ApiWebPushStatus> {
+    return apiFetch('/push-subscriptions/status')
+  },
+
+  async checkWebPushSubscription(endpoint: string): Promise<boolean> {
+    const response = await apiFetch<{ registered: boolean }>('/push-subscriptions/check', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    })
+    return response.registered
+  },
+
+  async enableWebPush(input: ApiWebPushSubscriptionInput): Promise<ApiWebPushStatus> {
+    const response = await apiFetch<{ status: ApiWebPushStatus }>('/push-subscriptions', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    return response.status
+  },
+
+  async disableWebPush(endpoint: string): Promise<ApiWebPushStatus> {
+    const response = await apiFetch<{ status: ApiWebPushStatus }>('/push-subscriptions', {
+      method: 'DELETE',
+      body: JSON.stringify({ endpoint }),
+    })
+    return response.status
+  },
+
+  async disableAllWebPush(): Promise<ApiWebPushStatus> {
+    const response = await apiFetch<{ status: ApiWebPushStatus }>('/push-subscriptions/all', {
+      method: 'DELETE',
+      body: '{}',
+    })
+    return response.status
   },
 
   async learnerProfile(): Promise<ApiLearnerProfile> {

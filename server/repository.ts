@@ -13,6 +13,7 @@ import type {
   LearnerProfile,
   LearnerProfileSignal,
   LifecycleJob,
+  NotificationChannel,
   NotificationJob,
   PlanningPreferences,
   PriorityAssessment,
@@ -22,6 +23,7 @@ import type {
   Task,
   Tenant,
   User,
+  WebPushSubscription,
 } from './domain/contracts.js'
 import { createSessionToken, hashPassword } from './lib/auth.js'
 
@@ -63,6 +65,7 @@ export class RepositoryError extends Error {
       | 'IMPORT_NOT_READY'
       | 'LIFECYCLE_LEASE_CONFLICT'
       | 'NOTIFICATION_LEASE_CONFLICT'
+      | 'PUSH_SUBSCRIPTION_IN_USE'
       | 'EXTRACTION_LEASE_CONFLICT'
       | 'LEARNER_PROFILE_VERSION_CONFLICT'
       | 'PLANNING_PREFERENCES_VERSION_CONFLICT',
@@ -135,6 +138,14 @@ export interface Repository {
   getReplanProposal(tenantId: string, proposalId: string): Awaitable<ReplanProposal | undefined>
   saveConsent(consent: ConsentAudit): Awaitable<ConsentAudit>
   listConsents(tenantId: string): Awaitable<ConsentAudit[]>
+  savePushSubscription(
+    tenantId: string,
+    userId: string,
+    input: Pick<WebPushSubscription, 'endpoint' | 'p256dh' | 'auth' | 'expiresAt'>,
+  ): Awaitable<WebPushSubscription>
+  listPushSubscriptions(tenantId: string, userId: string): Awaitable<WebPushSubscription[]>
+  deletePushSubscription(tenantId: string, userId: string, endpoint: string): Awaitable<boolean>
+  deletePushSubscriptions(tenantId: string, userId: string): Awaitable<number>
   getLearnerProfile(tenantId: string, userId: string): Awaitable<LearnerProfile | undefined>
   updateLearnerProfile(tenantId: string, userId: string, expectedVersion: number, signals: LearnerProfileSignal[]): Awaitable<LearnerProfile>
   getPlanningPreferences(tenantId: string, userId: string): Awaitable<PlanningPreferences | undefined>
@@ -142,9 +153,9 @@ export interface Repository {
   saveImportDraft(draft: ImportDraft): Awaitable<ImportDraft>
   getImportDraft(tenantId: string, draftId: string): Awaitable<ImportDraft | undefined>
   confirmIcsImport(tenantId: string, draftId: string): Awaitable<IcsImportResult>
-  scheduleDailyDigest(tenantId: string, userId: string, runAt: string): Awaitable<NotificationJob>
-  cancelDailyDigestJobs(tenantId: string, userId: string): Awaitable<number>
-  claimNotificationJobs(batchSize: number, now?: Date): Awaitable<NotificationJob[]>
+  scheduleDailyDigest(tenantId: string, userId: string, runAt: string, channel?: NotificationChannel): Awaitable<NotificationJob>
+  cancelDailyDigestJobs(tenantId: string, userId: string, channel?: NotificationChannel): Awaitable<number>
+  claimNotificationJobs(batchSize: number, now?: Date, channels?: NotificationChannel[]): Awaitable<NotificationJob[]>
   completeNotificationJob(
     job: NotificationJob,
     result: { status: 'completed' | 'skipped'; detail?: string; nextRunAt?: string },
@@ -195,6 +206,7 @@ export class InMemoryRepository implements Repository {
   private checkIns = new Map<string, CoachCheckIn>()
   private replanProposals = new Map<string, ReplanProposal>()
   private consents = new Map<string, ConsentAudit>()
+  private pushSubscriptions = new Map<string, WebPushSubscription>()
   private learnerProfiles = new Map<string, LearnerProfile>()
   private planningPreferences = new Map<string, PlanningPreferences>()
   private importDrafts = new Map<string, ImportDraft>()
@@ -1016,21 +1028,90 @@ export class InMemoryRepository implements Repository {
     return { draft: confirmed, tasks, busyBlocks }
   }
 
-  scheduleDailyDigest(tenantId: string, userId: string, runAt: string): NotificationJob {
+  savePushSubscription(
+    tenantId: string,
+    userId: string,
+    input: Pick<WebPushSubscription, 'endpoint' | 'p256dh' | 'auth' | 'expiresAt'>,
+  ): WebPushSubscription {
+    if (!this.getUser(tenantId, userId)) throw new Error('USER_NOT_FOUND')
+    const existing = [...this.pushSubscriptions.values()].find((subscription) => subscription.endpoint === input.endpoint)
+    if (existing && (existing.tenantId !== tenantId || existing.userId !== userId)) {
+      throw new RepositoryError('PUSH_SUBSCRIPTION_IN_USE', 'This browser subscription belongs to another account.')
+    }
+    const timestamp = nowIso()
+    const subscription: WebPushSubscription = {
+      id: existing?.id ?? randomUUID(),
+      tenantId,
+      userId,
+      ...input,
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    }
+    this.pushSubscriptions.set(subscription.id, subscription)
+    return subscription
+  }
+
+  listPushSubscriptions(tenantId: string, userId: string): WebPushSubscription[] {
+    return [...this.pushSubscriptions.values()]
+      .filter((subscription) => subscription.tenantId === tenantId && subscription.userId === userId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  }
+
+  deletePushSubscription(tenantId: string, userId: string, endpoint: string): boolean {
+    const subscription = [...this.pushSubscriptions.values()].find((item) => item.endpoint === endpoint)
+    if (!subscription || subscription.tenantId !== tenantId || subscription.userId !== userId) return false
+    return this.pushSubscriptions.delete(subscription.id)
+  }
+
+  deletePushSubscriptions(tenantId: string, userId: string): number {
+    let deleted = 0
+    for (const [id, subscription] of this.pushSubscriptions) {
+      if (subscription.tenantId === tenantId && subscription.userId === userId) {
+        this.pushSubscriptions.delete(id)
+        deleted += 1
+      }
+    }
+    return deleted
+  }
+
+  scheduleDailyDigest(
+    tenantId: string,
+    userId: string,
+    runAt: string,
+    channel: NotificationChannel = 'email',
+  ): NotificationJob {
     if (!this.getUser(tenantId, userId)) throw new Error('USER_NOT_FOUND')
     const parsedRunAt = new Date(runAt)
     if (Number.isNaN(parsedRunAt.getTime())) throw new Error('INVALID_NOTIFICATION_RUN_AT')
     const normalizedRunAt = parsedRunAt.toISOString()
     const digestDate = normalizedRunAt.slice(0, 10)
-    const idempotencyKey = `daily-digest:${userId}:${digestDate}`
+    const idempotencyKey = channel === 'email'
+      ? `daily-digest:${userId}:${digestDate}`
+      : `web-push-digest:${userId}:${digestDate}`
     const existing = [...this.notificationJobs.values()].find((job) => job.idempotencyKey === idempotencyKey)
-    if (existing) return existing
+    if (existing) {
+      if (existing.status !== 'cancelled' && existing.status !== 'failed') return existing
+      const restarted: NotificationJob = {
+        ...existing,
+        status: 'pending',
+        attempts: 0,
+        runAt: normalizedRunAt,
+        leaseToken: undefined,
+        leasedUntil: undefined,
+        lastError: undefined,
+        completedAt: undefined,
+        updatedAt: nowIso(),
+      }
+      this.notificationJobs.set(restarted.id, restarted)
+      return restarted
+    }
     const timestamp = nowIso()
     const job: NotificationJob = {
       id: randomUUID(),
       tenantId,
       userId,
       kind: 'daily_digest',
+      channel,
       digestDate,
       status: 'pending',
       attempts: 0,
@@ -1043,11 +1124,11 @@ export class InMemoryRepository implements Repository {
     return job
   }
 
-  cancelDailyDigestJobs(tenantId: string, userId: string): number {
+  cancelDailyDigestJobs(tenantId: string, userId: string, channel: NotificationChannel = 'email'): number {
     let cancelled = 0
     const timestamp = nowIso()
     for (const [id, job] of this.notificationJobs) {
-      if (job.tenantId === tenantId && job.userId === userId && job.kind === 'daily_digest' && job.status === 'pending') {
+      if (job.tenantId === tenantId && job.userId === userId && job.kind === 'daily_digest' && job.channel === channel && job.status === 'pending') {
         this.notificationJobs.set(id, { ...job, status: 'cancelled', updatedAt: timestamp, completedAt: timestamp })
         cancelled += 1
       }
@@ -1055,12 +1136,16 @@ export class InMemoryRepository implements Repository {
     return cancelled
   }
 
-  claimNotificationJobs(batchSize: number, now = new Date()): NotificationJob[] {
+  claimNotificationJobs(
+    batchSize: number,
+    now = new Date(),
+    channels: NotificationChannel[] = ['email', 'web_push'],
+  ): NotificationJob[] {
     const boundedBatch = Math.min(100, Math.max(1, batchSize))
     const due = [...this.notificationJobs.values()]
-      .filter((job) => job.status === 'pending'
+      .filter((job) => channels.includes(job.channel) && (job.status === 'pending'
         ? new Date(job.runAt) <= now
-        : job.status === 'leased' && job.leasedUntil !== undefined && new Date(job.leasedUntil) <= now)
+        : job.status === 'leased' && job.leasedUntil !== undefined && new Date(job.leasedUntil) <= now))
       .sort((left, right) => left.runAt.localeCompare(right.runAt) || left.createdAt.localeCompare(right.createdAt))
       .slice(0, boundedBatch)
 
@@ -1098,7 +1183,7 @@ export class InMemoryRepository implements Repository {
       completedAt: timestamp,
     })
     if (result.nextRunAt && this.getUser(job.tenantId, job.userId)) {
-      this.scheduleDailyDigest(job.tenantId, job.userId, result.nextRunAt)
+      this.scheduleDailyDigest(job.tenantId, job.userId, result.nextRunAt, job.channel)
     }
   }
 
@@ -1297,6 +1382,7 @@ export class InMemoryRepository implements Repository {
     deleteOwned(this.checkIns)
     deleteOwned(this.replanProposals)
     deleteOwned(this.consents)
+    deleteOwned(this.pushSubscriptions)
     deleteOwned(this.learnerProfiles)
     deleteOwned(this.planningPreferences)
     deleteOwned(this.importDrafts)

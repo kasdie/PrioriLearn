@@ -52,6 +52,22 @@ Production rollout for this checkpoint:
 
 No new required environment variable or third-party key was introduced. `AI_RATE_LIMIT_MAX` and `AI_RATE_LIMIT_WINDOW_MS` are optional production tuning values with safe defaults. Outbound email/digests, Google Calendar synchronization, Canvas OAuth/extension handoff, mobile optimization, and the recorded restore drill remain deferred.
 
+## Implementation checkpoint - 2026-07-29 (Web Push)
+
+- [x] Add tenant-owned, RLS-protected browser subscriptions and separate `web_push` consent history.
+- [x] Extend the durable daily queue with independent email/Web Push channels so an unconfigured email provider cannot block browser reminders.
+- [x] Deliver localized priority reminders through a VAPID sender, remove expired endpoints, and retain bounded retry/lease behavior.
+- [x] Add a service worker plus per-browser and all-browser opt-out controls, including revocation when permission or server configuration changes.
+- [x] Cover subscription API ownership, channel claims, worker delivery, UI consent, PostgreSQL migration, and the unconfigured E2E state.
+
+Production rollout for this checkpoint:
+
+1. Apply `server/db/migrations/014_web_push_notifications.sql` with `DATABASE_MIGRATOR_URL`.
+2. Add the persistent VAPID public/private keys and HTTPS subject to Render only, then redeploy the API.
+3. Verify `/api/health`, enable one production browser from Settings, run the protected daily maintenance job, receive one localized reminder, and revoke it again.
+
+Web Push does not require Resend, a paid custom domain, or a Vercel environment variable. Google Calendar, Canvas OAuth/authenticated extension handoff, outbound email deployment, mobile optimization, and the recorded restore drill remain deferred.
+
 ## Deployment milestones
 
 ### Milestone 1: Durable private alpha
@@ -78,7 +94,7 @@ Exit gate: 20-30 invited students can use the app for two weeks without shared c
 - Complete Google Calendar and Canvas OAuth callbacks, encrypted token storage, revocation, incremental sync, and retry queues.
 - [x] Add user-visible learner-profile signals with correction/deletion controls.
 - [x] Add daily email digest preferences backed by a durable, idempotent notification queue.
-- [ ] Add opt-in web/extension notifications after the desktop alpha is stable.
+- [x] Add opt-in web notifications after the desktop alpha is stable; extension-origin delivery remains deferred until authenticated handoff.
 - [x] Add focus completion, missed-block recovery, and plan-edit UX around immutable versions.
 
 Exit gate: every connector can be denied/revoked without breaking manual/PDF/ICS workflows, and no background process mutates an approved plan.

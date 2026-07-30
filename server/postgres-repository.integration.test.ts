@@ -188,6 +188,50 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
     expect(next).toBeDefined()
   })
 
+  test('web push subscriptions stay tenant-owned and use an independent queue channel', async () => {
+    const owner = await repository.createPersonalAccount({
+      email: 'push-owner@example.test',
+      password: 'push-password',
+      name: 'Push Owner',
+      locale: 'en',
+    })
+    const other = await repository.createPersonalAccount({
+      email: 'push-other@example.test',
+      password: 'push-password',
+      name: 'Push Other',
+      locale: 'en',
+    })
+    const endpoint = 'https://push.example.test/postgres-device'
+    const subscription = await repository.savePushSubscription(owner.tenantId, owner.id, {
+      endpoint,
+      p256dh: 'postgres-public-encryption-key',
+      auth: 'postgres-auth-secret',
+    })
+    expect(await repository.listPushSubscriptions(owner.tenantId, owner.id)).toEqual([subscription])
+    await expect(repository.savePushSubscription(other.tenantId, other.id, {
+      endpoint,
+      p256dh: 'other-public-encryption-key',
+      auth: 'other-auth-secret',
+    })).rejects.toMatchObject({ code: 'PUSH_SUBSCRIPTION_IN_USE' })
+
+    const emailJob = await repository.scheduleDailyDigest(
+      owner.tenantId,
+      owner.id,
+      '2019-01-01T03:00:00.000Z',
+      'email',
+    )
+    const pushJob = await repository.scheduleDailyDigest(
+      owner.tenantId,
+      owner.id,
+      '2019-01-01T03:00:00.000Z',
+      'web_push',
+    )
+    expect(pushJob.id).not.toBe(emailJob.id)
+    const webPushClaims = await repository.claimNotificationJobs(50, undefined, ['web_push'])
+    expect(webPushClaims.some((job) => job.id === pushJob.id)).toBe(true)
+    expect(webPushClaims.some((job) => job.id === emailJob.id)).toBe(false)
+  })
+
   test('concurrent plan transitions preserve one pending and one active version', async () => {
     const alice = await repository.findUserByEmail('alice@example.test')
     const bob = await repository.findUserByEmail('bob@example.test')

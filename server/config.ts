@@ -31,6 +31,9 @@ export type AppConfig = {
   googleClientId?: string
   resendApiKey?: string
   emailFrom?: string
+  webPushPublicKey?: string
+  webPushPrivateKey?: string
+  webPushSubject?: string
   sentryDsn?: string
   sentryEnvironment: string
   sentryRelease?: string
@@ -56,6 +59,14 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     : process.env.NODE_ENV === 'production'
   const extractionWorkerIntervalMs = Number(process.env.EXTRACTION_WORKER_INTERVAL_MS ?? 3_000)
   const extractionWorkerBatchSize = Number(process.env.EXTRACTION_WORKER_BATCH_SIZE ?? 2)
+  const webPushValues = [
+    process.env.WEB_PUSH_PUBLIC_KEY,
+    process.env.WEB_PUSH_PRIVATE_KEY,
+    process.env.WEB_PUSH_SUBJECT,
+  ]
+  if (webPushValues.some(Boolean) && !webPushValues.every(Boolean)) {
+    throw new Error('WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY, and WEB_PUSH_SUBJECT must be set together.')
+  }
 
   return {
     port: Number(process.env.PORT ?? 8787),
@@ -81,6 +92,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     googleClientId: process.env.GOOGLE_CLIENT_ID || undefined,
     resendApiKey: process.env.RESEND_API_KEY || undefined,
     emailFrom: process.env.EMAIL_FROM || undefined,
+    webPushPublicKey: process.env.WEB_PUSH_PUBLIC_KEY || undefined,
+    webPushPrivateKey: process.env.WEB_PUSH_PRIVATE_KEY || undefined,
+    webPushSubject: process.env.WEB_PUSH_SUBJECT || undefined,
     sentryDsn: process.env.SENTRY_DSN || undefined,
     sentryEnvironment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
     sentryRelease: process.env.SENTRY_RELEASE || process.env.RENDER_GIT_COMMIT || undefined,

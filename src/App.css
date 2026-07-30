@@ -30,6 +30,10 @@
 .permission-row strong { font-size: 12px; }
 .permission-row small { max-width: 430px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .permission-row input { width: 18px; height: 18px; accent-color: var(--forest); }
+.notification-settings .settings-panel-heading h2 { display: flex; align-items: center; gap: 8px; }
+.notification-toggle { border-bottom: 0; padding-bottom: 4px; }
+.notification-settings > .secondary-button { justify-self: start; }
+.settings-inline-error { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: #9d342c; font-size: 12px; line-height: 1.45; }
 .learner-profile-panel { align-content: start; }
 .learner-profile-empty { margin: 0; padding: 14px; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; line-height: 1.5; }
 .learner-signal-list { display: grid; gap: 8px; }

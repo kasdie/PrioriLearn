@@ -13,6 +13,7 @@ import type {
   LearnerProfile,
   LearnerProfileSignal,
   LifecycleJob,
+  NotificationChannel,
   NotificationJob,
   PlanningPreferences,
   PriorityAssessment,
@@ -22,6 +23,7 @@ import type {
   Task,
   Tenant,
   User,
+  WebPushSubscription,
 } from './domain/contracts.js'
 import { createSessionToken, hashPassword } from './lib/auth.js'
 import {
@@ -217,6 +219,7 @@ function rowNotificationJob(row: Row): NotificationJob {
     tenantId: String(row.tenant_id),
     userId: String(row.user_id),
     kind: row.kind as NotificationJob['kind'],
+    channel: row.channel as NotificationJob['channel'],
     digestDate,
     status: row.status as NotificationJob['status'],
     attempts: Number(row.attempts),
@@ -228,6 +231,20 @@ function rowNotificationJob(row: Row): NotificationJob {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     completedAt: row.completed_at ? iso(row.completed_at) : undefined,
+  }
+}
+
+function rowWebPushSubscription(row: Row): WebPushSubscription {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    userId: String(row.user_id),
+    endpoint: String(row.endpoint),
+    p256dh: String(row.p256dh),
+    auth: String(row.auth_secret),
+    expiresAt: row.expires_at ? iso(row.expires_at) : undefined,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
   }
 }
 
@@ -249,7 +266,11 @@ function rowExtractionJob(row: Row): ExtractionJob {
   }
 }
 
-function dailyDigestIdentity(userId: string, runAt: string): { runAt: string; digestDate: string; idempotencyKey: string } {
+function dailyDigestIdentity(
+  userId: string,
+  runAt: string,
+  channel: NotificationChannel,
+): { runAt: string; digestDate: string; idempotencyKey: string } {
   const parsed = new Date(runAt)
   if (Number.isNaN(parsed.getTime())) throw new Error('INVALID_NOTIFICATION_RUN_AT')
   const normalized = parsed.toISOString()
@@ -257,7 +278,9 @@ function dailyDigestIdentity(userId: string, runAt: string): { runAt: string; di
   return {
     runAt: normalized,
     digestDate,
-    idempotencyKey: `daily-digest:${userId}:${digestDate}`,
+    idempotencyKey: channel === 'email'
+      ? `daily-digest:${userId}:${digestDate}`
+      : `web-push-digest:${userId}:${digestDate}`,
   }
 }
 
@@ -1518,17 +1541,104 @@ export class PostgresRepository implements Repository {
     })
   }
 
-  async scheduleDailyDigest(tenantId: string, userId: string, runAt: string): Promise<NotificationJob> {
-    const identity = dailyDigestIdentity(userId, runAt)
+  async savePushSubscription(
+    tenantId: string,
+    userId: string,
+    input: Pick<WebPushSubscription, 'endpoint' | 'p256dh' | 'auth' | 'expiresAt'>,
+  ): Promise<WebPushSubscription> {
+    try {
+      return await this.withTenant(tenantId, async (client) => {
+        const result = await client.query<Row>(
+          `INSERT INTO push_subscriptions (
+             tenant_id, user_id, endpoint, p256dh, auth_secret, expires_at
+           ) VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (endpoint) DO UPDATE
+             SET p256dh = EXCLUDED.p256dh, auth_secret = EXCLUDED.auth_secret,
+                 expires_at = EXCLUDED.expires_at, updated_at = now()
+             WHERE push_subscriptions.tenant_id = EXCLUDED.tenant_id
+               AND push_subscriptions.user_id = EXCLUDED.user_id
+           RETURNING *`,
+          [tenantId, userId, input.endpoint, input.p256dh, input.auth, input.expiresAt ?? null],
+        )
+        const row = result.rows[0]
+        if (!row) throw new RepositoryError('PUSH_SUBSCRIPTION_IN_USE', 'This browser subscription belongs to another account.')
+        return rowWebPushSubscription(row)
+      })
+    } catch (error) {
+      if (error instanceof RepositoryError) throw error
+      if (['23505', '42501'].includes(String((error as { code?: string }).code))) {
+        throw new RepositoryError('PUSH_SUBSCRIPTION_IN_USE', 'This browser subscription belongs to another account.')
+      }
+      throw error
+    }
+  }
+
+  async listPushSubscriptions(tenantId: string, userId: string): Promise<WebPushSubscription[]> {
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query<Row>(
+        'SELECT * FROM push_subscriptions WHERE tenant_id = $1 AND user_id = $2 ORDER BY created_at DESC',
+        [tenantId, userId],
+      )
+      return result.rows.map(rowWebPushSubscription)
+    })
+  }
+
+  async deletePushSubscription(tenantId: string, userId: string, endpoint: string): Promise<boolean> {
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        'DELETE FROM push_subscriptions WHERE tenant_id = $1 AND user_id = $2 AND endpoint = $3',
+        [tenantId, userId, endpoint],
+      )
+      return (result.rowCount ?? 0) > 0
+    })
+  }
+
+  async deletePushSubscriptions(tenantId: string, userId: string): Promise<number> {
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query(
+        'DELETE FROM push_subscriptions WHERE tenant_id = $1 AND user_id = $2',
+        [tenantId, userId],
+      )
+      return result.rowCount ?? 0
+    })
+  }
+
+  async scheduleDailyDigest(
+    tenantId: string,
+    userId: string,
+    runAt: string,
+    channel: NotificationChannel = 'email',
+  ): Promise<NotificationJob> {
+    const identity = dailyDigestIdentity(userId, runAt, channel)
     return this.withTenant(tenantId, async (client) => {
       const result = await client.query<Row>(
         `INSERT INTO notification_jobs (
-           tenant_id, user_id, kind, digest_date, status, attempts, run_at, idempotency_key
-         ) VALUES ($1, $2, 'daily_digest', $3, 'pending', 0, $4, $5)
+           tenant_id, user_id, kind, channel, digest_date, status, attempts, run_at, idempotency_key
+         ) VALUES ($1, $2, 'daily_digest', $3, $4, 'pending', 0, $5, $6)
          ON CONFLICT (idempotency_key) DO UPDATE
-           SET idempotency_key = EXCLUDED.idempotency_key
+           SET status = CASE
+                 WHEN notification_jobs.status IN ('cancelled', 'failed') THEN 'pending'
+                 ELSE notification_jobs.status
+               END,
+               attempts = CASE
+                 WHEN notification_jobs.status IN ('cancelled', 'failed') THEN 0
+                 ELSE notification_jobs.attempts
+               END,
+               run_at = CASE
+                 WHEN notification_jobs.status IN ('cancelled', 'failed') THEN EXCLUDED.run_at
+                 ELSE notification_jobs.run_at
+               END,
+               last_error = CASE
+                 WHEN notification_jobs.status IN ('cancelled', 'failed') THEN NULL
+                 ELSE notification_jobs.last_error
+               END,
+               completed_at = CASE
+                 WHEN notification_jobs.status IN ('cancelled', 'failed') THEN NULL
+                 ELSE notification_jobs.completed_at
+               END,
+               updated_at = now()
          RETURNING *`,
-        [tenantId, userId, identity.digestDate, identity.runAt, identity.idempotencyKey],
+        [tenantId, userId, channel, identity.digestDate, identity.runAt, identity.idempotencyKey],
       )
       const row = result.rows[0]
       if (!row) throw new Error('NOTIFICATION_JOB_CREATION_FAILED')
@@ -1536,22 +1646,31 @@ export class PostgresRepository implements Repository {
     })
   }
 
-  async cancelDailyDigestJobs(tenantId: string, userId: string): Promise<number> {
+  async cancelDailyDigestJobs(
+    tenantId: string,
+    userId: string,
+    channel: NotificationChannel = 'email',
+  ): Promise<number> {
     return this.withTenant(tenantId, async (client) => {
       const result = await client.query(
         `UPDATE notification_jobs
          SET status = 'cancelled', completed_at = now(), updated_at = now()
-         WHERE tenant_id = $1 AND user_id = $2 AND kind = 'daily_digest' AND status = 'pending'`,
-        [tenantId, userId],
+         WHERE tenant_id = $1 AND user_id = $2 AND kind = 'daily_digest'
+           AND channel = $3 AND status = 'pending'`,
+        [tenantId, userId, channel],
       )
       return result.rowCount ?? 0
     })
   }
 
-  async claimNotificationJobs(batchSize: number): Promise<NotificationJob[]> {
+  async claimNotificationJobs(
+    batchSize: number,
+    _now?: Date,
+    channels: NotificationChannel[] = ['email', 'web_push'],
+  ): Promise<NotificationJob[]> {
     const result = await this.pool.query<Row>(
-      'SELECT * FROM private.claim_due_notification_jobs($1)',
-      [batchSize],
+      'SELECT * FROM private.claim_due_notification_jobs($1, $2)',
+      [batchSize, channels],
     )
     return result.rows.map(rowNotificationJob)
   }
@@ -1578,13 +1697,13 @@ export class PostgresRepository implements Repository {
         [job.id, job.tenantId, job.leaseToken ?? null, result.status, result.detail ?? null, completedAt.toISOString()],
       )
       if (result.nextRunAt) {
-        const identity = dailyDigestIdentity(job.userId, result.nextRunAt)
+        const identity = dailyDigestIdentity(job.userId, result.nextRunAt, job.channel)
         await client.query(
           `INSERT INTO notification_jobs (
-             tenant_id, user_id, kind, digest_date, status, attempts, run_at, idempotency_key
-           ) VALUES ($1, $2, 'daily_digest', $3, 'pending', 0, $4, $5)
+             tenant_id, user_id, kind, channel, digest_date, status, attempts, run_at, idempotency_key
+           ) VALUES ($1, $2, 'daily_digest', $3, $4, 'pending', 0, $5, $6)
            ON CONFLICT (idempotency_key) DO NOTHING`,
-          [job.tenantId, job.userId, identity.digestDate, identity.runAt, identity.idempotencyKey],
+          [job.tenantId, job.userId, job.channel, identity.digestDate, identity.runAt, identity.idempotencyKey],
         )
       }
     })

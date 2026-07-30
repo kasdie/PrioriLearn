@@ -47,6 +47,12 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
+      - key: WEB_PUSH_PUBLIC_KEY
+        sync: false
+      - key: WEB_PUSH_PRIVATE_KEY
+        sync: false
+      - key: WEB_PUSH_SUBJECT
+        sync: false
       - key: SENTRY_DSN
         sync: false
       - key: SENTRY_ENVIRONMENT

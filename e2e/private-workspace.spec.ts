@@ -65,6 +65,8 @@ test('private student completes multi-file review, weekly planning, approval, an
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Privacy and data' })).toBeVisible()
   await expect(page.getByLabel('Email digest')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Device reminders' })).toBeVisible()
+  await expect(page.getByLabel('Notifications on this browser')).toBeDisabled()
   await page.getByLabel('Aggregate research').check()
   await expect(page.getByLabel('Aggregate research')).toBeChecked()
   await page.getByRole('button', { name: 'Add signal' }).click()

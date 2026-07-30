@@ -23,6 +23,7 @@ Use this runbook for planned rotation and immediately after a suspected leak. Re
 | Google OAuth client ID | Render and Vercel | Stable production origin signs in; invalid audience is rejected |
 | `OPENAI_API_KEY` | Render | One PDF/TXT and one PNG/JPEG extraction reach review |
 | `RESEND_API_KEY` | Render | Verification email arrives; reset response remains non-enumerating |
+| VAPID key pair / `WEB_PUSH_PRIVATE_KEY` | Render | API health is configured; a newly subscribed browser receives and revokes one reminder |
 | `SENTRY_DSN` | Render | API health reports Sentry configured; one test event arrives |
 | `VITE_SENTRY_DSN` | Vercel | One browser test event arrives without URL query or user data |
 | `SENTRY_AUTH_TOKEN` | Vercel build environment | Build uploads source maps; token is not present in client assets |
@@ -59,6 +60,10 @@ Rotate `CRON_SECRET` as one Vercel deployment because Vercel's caller and functi
 For Google Sign-In, create a replacement Web OAuth client, add both the local and stable production JavaScript origins, then update `GOOGLE_CLIENT_ID` on Render and `VITE_GOOGLE_CLIENT_ID` on Vercel. Redeploy both before deleting the old client. No Google client secret is used.
 
 For OpenAI and Resend, create a second restricted API key, update Render, deploy, and exercise one real operation. Revoke the old key only after the operation succeeds. Resend also requires the configured `EMAIL_FROM` domain to remain verified.
+
+## Web Push
+
+Treat the VAPID private key as a long-lived Render secret. A VAPID public key is embedded into every browser subscription, so rotating the pair cannot preserve those subscriptions. Generate a new pair, update `WEB_PUSH_PUBLIC_KEY` and `WEB_PUSH_PRIVATE_KEY` together, retain the same `WEB_PUSH_SUBJECT`, and redeploy Render. Existing browsers will be unsubscribed and registered against the new key the next time their user enables Device reminders; stale server endpoints are removed after the push provider reports them expired. Record the rotation and test one new subscription, delivery, current-device revocation, and all-device revocation.
 
 ## Sentry
 

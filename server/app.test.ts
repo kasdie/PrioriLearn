@@ -6,6 +6,7 @@ import { MemoryEmailSender } from './services/email.js'
 import { MemoryErrorReporter } from './services/error-reporter.js'
 import { InvalidGoogleIdentityError } from './services/google-auth.js'
 import { processLifecycleJobs } from './services/purge.js'
+import { MemoryWebPushSender } from './services/web-push.js'
 import { MemoryObjectStore } from './storage.js'
 
 describe('PrioriLearn API', () => {
@@ -524,6 +525,93 @@ describe('PrioriLearn API', () => {
       .set('Cookie', digestCookie)
       .send({ purpose: 'email_digest', granted: false, source: 'settings' })
       .expect(201)
+  })
+
+  it('manages per-device web push consent and delivers without email configuration', async () => {
+    const webPushSender = new MemoryWebPushSender()
+    const pushContext = await createApplication({
+      config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory' },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+      webPushSender,
+    })
+    const registration = await request(pushContext.app)
+      .post('/api/auth/register')
+      .send({ email: 'push@example.com', password: 'strong-password', name: 'Push Student', locale: 'en' })
+      .expect(201)
+    const pushCookie = sessionCookie(registration)
+    const tenantId = registration.body.user.tenantId as string
+    const userId = registration.body.user.id as string
+
+    const initial = await request(pushContext.app)
+      .get('/api/push-subscriptions/status')
+      .set('Cookie', pushCookie)
+      .expect(200)
+    expect(initial.body).toMatchObject({ configured: true, subscriptionCount: 0, consentGranted: false })
+    expect(initial.body.publicKey).toBe(webPushSender.publicKey)
+
+    const subscription = {
+      endpoint: 'https://push.example.test/device-1',
+      expirationTime: null,
+      keys: { p256dh: 'device-public-encryption-key', auth: 'device-auth-secret' },
+    }
+    await request(pushContext.app)
+      .post('/api/push-subscriptions')
+      .set('Cookie', pushCookie)
+      .send({ ...subscription, endpoint: 'https://127.0.0.1/internal' })
+      .expect(400)
+    const enabled = await request(pushContext.app)
+      .post('/api/push-subscriptions')
+      .set('Cookie', pushCookie)
+      .send(subscription)
+      .expect(201)
+    expect(enabled.body.status).toMatchObject({ subscriptionCount: 1, consentGranted: true })
+
+    const checked = await request(pushContext.app)
+      .post('/api/push-subscriptions/check')
+      .set('Cookie', pushCookie)
+      .send({ endpoint: subscription.endpoint })
+      .expect(200)
+    expect(checked.body.registered).toBe(true)
+
+    const course = await pushContext.repository.createCourse(tenantId, {
+      code: 'PUSH101', name: 'Push testing', currentScore: 60, targetScore: 85,
+    })
+    await pushContext.repository.createTask(tenantId, {
+      courseId: course.id,
+      title: 'Review browser reminders',
+      dueAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      gradeWeight: 20,
+      estimatedMinutes: 30,
+      status: 'confirmed',
+      sourceKind: 'manual',
+      confidence: 1,
+      evidence: ['API test task'],
+    })
+    await pushContext.repository.scheduleDailyDigest(
+      tenantId,
+      userId,
+      '2020-01-01T03:00:00.000Z',
+      'web_push',
+    )
+    const maintenance = await request(pushContext.app)
+      .post('/api/internal/maintenance/daily')
+      .set('x-maintenance-secret', 'test-secret')
+      .expect(200)
+    expect(maintenance.body.notifications).toMatchObject({
+      emailConfigured: false,
+      webPushConfigured: true,
+      claimed: 1,
+      sent: 1,
+    })
+    expect(webPushSender.messages[0]?.payload.title).toContain('Review browser reminders')
+
+    const disabled = await request(pushContext.app)
+      .delete('/api/push-subscriptions')
+      .set('Cookie', pushCookie)
+      .send({ endpoint: subscription.endpoint })
+      .expect(200)
+    expect(disabled.body).toMatchObject({ removed: true, status: { subscriptionCount: 0, consentGranted: false } })
   })
 
   it('rejects untrusted writes and prevents private response caching', async () => {

@@ -97,6 +97,24 @@ When all three build-only values are present, Vite creates hidden source maps, u
 
 After both redeployments, `/api/health` must report `errorReporter: "sentry"` and `errorReportingConfigured: true`. In a private browser window, run one Sentry onboarding test event and confirm its URL has no query string and its event has no user, request body, cookie, or authorization data.
 
+## Opt-In Web Push
+
+Web Push is independent of transactional email and does not require Resend or a paid custom domain. Generate one persistent VAPID pair from the repository root:
+
+```powershell
+npx.cmd web-push generate-vapid-keys --json
+```
+
+Add these values to the **Render API only**:
+
+- `WEB_PUSH_PUBLIC_KEY`: the generated `publicKey`.
+- `WEB_PUSH_PRIVATE_KEY`: the generated `privateKey`; keep it secret and never prefix it with `VITE_`.
+- `WEB_PUSH_SUBJECT=https://priori-learn-kasdies-projects.vercel.app`: a stable HTTPS contact identifier accepted by the push service.
+
+All three values are required together. Do not add them to Vercel: the signed-in browser receives only the public key from the API status route. Keep the key pair persistent because rotating it requires browsers to subscribe again.
+
+After saving the variables, redeploy Render and verify `/api/health` reports `webPushProvider: "vapid"` and `webPushConfigured: true`. In production Settings, enable **Device reminders** from a user gesture, accept the browser permission prompt, then confirm the control can disable the current browser and every registered browser. Task titles may appear on a lock screen, so the consent copy must remain visible.
+
 ## Transactional Account Email
 
 PrioriLearn sends verification and password-reset links from the Render API through Resend. Add these variables to **Render only**:
@@ -117,7 +135,7 @@ Without these variables, sign-in and the rest of the application remain availabl
 
 ## Daily Maintenance Cron
 
-`vercel.json` runs `GET /api/cron/daily` daily at 03:00 UTC. The single wake-up processes both lifecycle cleanup and due email digests. Set these values in the Vercel Production environment:
+`vercel.json` runs `GET /api/cron/daily` daily at 03:00 UTC. The single wake-up processes lifecycle cleanup and due jobs for every configured notification channel. Set these values in the Vercel Production environment:
 
 - `CRON_SECRET`: a new high-entropy value. Vercel sends it to the function as `Authorization: Bearer ...`.
 - `MAINTENANCE_SECRET`: copy the generated Render value exactly; it is forwarded only from the protected Vercel Function to Render.
@@ -127,7 +145,7 @@ The cron route rejects calls without `CRON_SECRET`, then sends a server-to-serve
 
 Lifecycle jobs are at-least-once operations: object deletion is idempotent, each claim has a 15-minute lease, and failures back off exponentially up to one day. After 12 failed attempts a job and its deletion receipt are marked `failed` rather than being retried forever; the tenant remains soft-deleted and cannot regain access.
 
-Daily digest jobs are created only after the user explicitly grants `email_digest` consent and has a verified email. Each user/day has one idempotency key. A worker rechecks the latest consent immediately before delivery, skips empty workspaces, retries transient provider errors, and atomically schedules the next day after completion or a deliberate skip. If Resend is not configured, jobs remain pending rather than consuming attempts.
+Daily notification jobs are created only after explicit channel-specific consent. Each user/channel/day has one idempotency key. A worker rechecks the latest consent immediately before delivery, skips empty workspaces, retries transient provider errors, removes expired browser subscriptions, and atomically schedules the next day after completion or a deliberate skip. If a provider is not configured, that channel remains pending without blocking configured channels or consuming attempts.
 
 ## Extraction Worker
 

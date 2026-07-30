@@ -289,10 +289,17 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
             <p>{mode === 'login' ? t.loginIntro : mode === 'register' ? t.registerIntro : t.forgotIntro}</p>
           </div>
 
-          {(notice || error || success) && (
+          {notice && (
+            <div className="auth-message" role="status">
+              <CircleAlert size={17} />
+              <span>{notice}</span>
+            </div>
+          )}
+
+          {(error || success) && (
             <div className={error ? 'auth-message error' : success ? 'auth-message success' : 'auth-message'} role={error ? 'alert' : 'status'}>
               {success ? <CircleCheck size={17} /> : <CircleAlert size={17} />}
-              <span>{error ?? success ?? notice}</span>
+              <span>{error ?? success}</span>
             </div>
           )}
 

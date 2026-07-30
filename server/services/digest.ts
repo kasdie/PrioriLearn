@@ -1,7 +1,8 @@
-import type { Course, NotificationJob, PriorityAssessment, Task, User } from '../domain/contracts.js'
+import type { Course, NotificationChannel, NotificationJob, PriorityAssessment, Task, User } from '../domain/contracts.js'
 import type { Repository } from '../repository.js'
 import type { EmailSender } from './email.js'
 import { assessPriority } from './priority.js'
+import { DisabledWebPushSender, type WebPushPayload, type WebPushSender } from './web-push.js'
 
 type RankedDigestTask = {
   task: Task
@@ -11,8 +12,12 @@ type RankedDigestTask = {
 
 export type DigestWorkerResult = {
   configured: boolean
+  emailConfigured: boolean
+  webPushConfigured: boolean
   claimed: number
   sent: number
+  deliveries: number
+  expiredSubscriptions: number
   skipped: number
   retried: number
   failed: number
@@ -91,12 +96,30 @@ function digestEmail(input: {
   }
 }
 
+function digestPush(input: {
+  user: User
+  ranked: RankedDigestTask[]
+  appOrigin: string
+  job: NotificationJob
+}): WebPushPayload {
+  const top = input.ranked[0]
+  if (!top) throw new Error('DIGEST_REQUIRES_TASK')
+  const isVietnamese = input.user.locale === 'vi'
+  return {
+    title: isVietnamese ? `Ưu tiên hôm nay: ${top.task.title}` : `Today's priority: ${top.task.title}`,
+    body: `${top.course.name} · ${top.assessment.score}/100 · ${formatDue(top.task, input.user)}`,
+    url: input.appOrigin,
+    tag: `priori-digest-${input.job.digestDate.replaceAll('-', '')}`,
+  }
+}
+
 function latestDigestConsentGranted(
   consents: Awaited<ReturnType<Repository['listConsents']>>,
   userId: string,
+  purpose: 'email_digest' | 'web_push',
 ): boolean {
   const latest = consents
-    .filter((consent) => consent.userId === userId && consent.purpose === 'email_digest')
+    .filter((consent) => consent.userId === userId && consent.purpose === purpose)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
   return latest?.granted ?? false
 }
@@ -104,22 +127,31 @@ function latestDigestConsentGranted(
 export async function processNotificationJobs(input: {
   repository: Repository
   emailSender: EmailSender
+  webPushSender?: WebPushSender
   appOrigin: string
   batchSize?: number
   now?: Date
 }): Promise<DigestWorkerResult> {
+  const webPushSender = input.webPushSender ?? new DisabledWebPushSender()
+  const configuredChannels: NotificationChannel[] = []
+  if (input.emailSender.configured) configuredChannels.push('email')
+  if (webPushSender.configured) configuredChannels.push('web_push')
   const result: DigestWorkerResult = {
-    configured: input.emailSender.configured,
+    configured: configuredChannels.length > 0,
+    emailConfigured: input.emailSender.configured,
+    webPushConfigured: webPushSender.configured,
     claimed: 0,
     sent: 0,
+    deliveries: 0,
+    expiredSubscriptions: 0,
     skipped: 0,
     retried: 0,
     failed: 0,
   }
-  if (!input.emailSender.configured) return result
+  if (configuredChannels.length === 0) return result
 
   const now = input.now ?? new Date()
-  const jobs = await input.repository.claimNotificationJobs(input.batchSize ?? 25, now)
+  const jobs = await input.repository.claimNotificationJobs(input.batchSize ?? 25, now, configuredChannels)
   result.claimed = jobs.length
 
   for (const job of jobs) {
@@ -135,18 +167,19 @@ export async function processNotificationJobs(input: {
       }
 
       const consents = await input.repository.listConsents(job.tenantId)
-      const digestEnabled = latestDigestConsentGranted(consents, user.id)
+      const purpose = job.channel === 'email' ? 'email_digest' : 'web_push'
+      const digestEnabled = latestDigestConsentGranted(consents, user.id, purpose)
       if (!digestEnabled) {
         await input.repository.completeNotificationJob(job, {
           status: 'skipped',
-          detail: 'Daily digest consent is not active.',
+          detail: `${job.channel} digest consent is not active.`,
         }, now)
         result.skipped += 1
         continue
       }
 
       const nextRunAt = nextDailyDigestRun(now)
-      if (!user.emailVerifiedAt) {
+      if (job.channel === 'email' && !user.emailVerifiedAt) {
         await input.repository.completeNotificationJob(job, {
           status: 'skipped',
           detail: 'Email is not verified.',
@@ -181,17 +214,46 @@ export async function processNotificationJobs(input: {
         continue
       }
 
-      await input.emailSender.send(digestEmail({
-        user,
-        ranked,
-        appOrigin: input.appOrigin,
-        job,
-      }))
+      let deliveries = 0
+      if (job.channel === 'email') {
+        await input.emailSender.send(digestEmail({
+          user,
+          ranked,
+          appOrigin: input.appOrigin,
+          job,
+        }))
+        deliveries = 1
+      } else {
+        const subscriptions = await input.repository.listPushSubscriptions(job.tenantId, job.userId)
+        for (const subscription of subscriptions) {
+          const outcome = await webPushSender.send(subscription, digestPush({
+            user,
+            ranked,
+            appOrigin: input.appOrigin,
+            job,
+          }))
+          if (outcome === 'expired') {
+            await input.repository.deletePushSubscription(job.tenantId, job.userId, subscription.endpoint)
+            result.expiredSubscriptions += 1
+          } else {
+            deliveries += 1
+          }
+        }
+        if (deliveries === 0) {
+          await input.repository.completeNotificationJob(job, {
+            status: 'skipped',
+            detail: 'No active browser subscriptions are available.',
+          }, now)
+          result.skipped += 1
+          continue
+        }
+      }
       await input.repository.completeNotificationJob(job, {
         status: 'completed',
         nextRunAt,
       }, now)
       result.sent += 1
+      result.deliveries += deliveries
     } catch (error) {
       const outcome = await input.repository.failNotificationJob(
         job,
@@ -200,7 +262,7 @@ export async function processNotificationJobs(input: {
       )
       if (outcome === 'failed') {
         result.failed += 1
-        await input.repository.scheduleDailyDigest(job.tenantId, job.userId, nextDailyDigestRun(now))
+        await input.repository.scheduleDailyDigest(job.tenantId, job.userId, nextDailyDigestRun(now), job.channel)
       } else {
         result.retried += 1
       }

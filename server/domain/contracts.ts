@@ -286,11 +286,25 @@ export type ConsentAudit = {
   id: string
   tenantId: string
   userId: string
-  purpose: 'product_terms' | 'calendar_read' | 'canvas_read' | 'email_digest' | 'research_metrics'
+  purpose: 'product_terms' | 'calendar_read' | 'canvas_read' | 'email_digest' | 'web_push' | 'research_metrics'
   granted: boolean
   source: 'onboarding' | 'settings' | 'connector' | 'api'
   createdAt: string
 }
+
+export type WebPushSubscription = {
+  id: string
+  tenantId: string
+  userId: string
+  endpoint: string
+  p256dh: string
+  auth: string
+  expiresAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type NotificationChannel = 'email' | 'web_push'
 
 export type ImportDraft = {
   id: string
@@ -325,6 +339,7 @@ export type NotificationJob = {
   tenantId: string
   userId: string
   kind: 'daily_digest'
+  channel: NotificationChannel
   digestDate: string
   status: 'pending' | 'leased' | 'completed' | 'skipped' | 'cancelled' | 'failed'
   attempts: number
@@ -504,9 +519,44 @@ export const ReplanApprovalInputSchema = z.object({
 })
 
 export const ConsentInputSchema = z.object({
-  purpose: z.enum(['product_terms', 'calendar_read', 'canvas_read', 'email_digest', 'research_metrics']),
+  purpose: z.enum(['product_terms', 'calendar_read', 'canvas_read', 'email_digest', 'web_push', 'research_metrics']),
   granted: z.boolean(),
   source: z.enum(['onboarding', 'settings', 'connector', 'api']).default('api'),
+})
+
+export function isValidWebPushEndpoint(value: string): boolean {
+  try {
+    const endpoint = new URL(value)
+    const hostname = endpoint.hostname.toLowerCase()
+    return endpoint.protocol === 'https:'
+      && endpoint.username === ''
+      && endpoint.password === ''
+      && (endpoint.port === '' || endpoint.port === '443')
+      && hostname.includes('.')
+      && !hostname.startsWith('[')
+      && !/^\d+(?:\.\d+){3}$/.test(hostname)
+      && !hostname.endsWith('.localhost')
+      && !hostname.endsWith('.local')
+      && !hostname.endsWith('.internal')
+  } catch {
+    return false
+  }
+}
+
+const WebPushEndpointSchema = z.string().trim().max(2048)
+  .refine(isValidWebPushEndpoint, 'A public HTTPS push endpoint is required.')
+
+export const WebPushSubscriptionInputSchema = z.object({
+  endpoint: WebPushEndpointSchema,
+  expirationTime: z.number().int().positive().max(8_640_000_000_000_000).nullable().optional(),
+  keys: z.object({
+    p256dh: z.string().trim().min(16).max(512),
+    auth: z.string().trim().min(8).max(256),
+  }),
+})
+
+export const WebPushEndpointInputSchema = z.object({
+  endpoint: WebPushEndpointSchema,
 })
 
 export const LearnerProfileSignalInputSchema = z.object({

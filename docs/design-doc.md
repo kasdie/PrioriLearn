@@ -15,9 +15,10 @@ Implemented boundaries:
 - Versioned planning preferences, AI-assisted availability intake, and a seven-day board with free windows, busy blocks, deadlines, daily limits, timezone/DST handling, and explicit unscheduled-work warnings.
 - Conflict-aware scheduling, coach-mode limits, immutable plan versions, approval receipts, approval-time revalidation, check-ins, replan proposals, explicit focus completion, missed-block recovery, and tenant-private learner-profile preferences with correction/deletion controls.
 - Consent audit and product-event APIs, server-verified Google Sign-In, and no institution-facing V1 routes.
+- Per-device opt-in Web Push reminders with VAPID delivery, explicit consent, tenant-owned subscriptions, and user-controlled revocation on one or every browser.
 - PostgreSQL migrations with tenant foreign keys, RLS policies, encrypted-token columns, and cohort threshold constraints.
 
-The zero-setup development runtime can use `InMemoryRepository`; production uses `PostgresRepository` and Supabase Storage. Email verification and password reset use hashed, expiring, one-time tokens; deployed delivery requires the Render-only Resend configuration. Daily digests use a tenant-scoped durable notification queue with one job per user/day, leased claims, retry backoff, and explicit consent. Document extraction is also durable: the request enqueues work, a bounded Render worker leases it, and the browser polls the tenant-owned document until review or a recoverable failure. Calendar/LMS OAuth callbacks and connector token encryption remain future work.
+The zero-setup development runtime can use `InMemoryRepository`; production uses `PostgresRepository` and Supabase Storage. Email verification and password reset use hashed, expiring, one-time tokens; deployed delivery requires the Render-only Resend configuration. Daily reminders use a tenant-scoped durable notification queue with one job per user/channel/day, leased claims, retry backoff, and separate explicit consent for email and Web Push. Email remains optional; browser reminders work with only a persistent VAPID key pair on Render. Document extraction is also durable: the request enqueues work, a bounded Render worker leases it, and the browser polls the tenant-owned document until review or a recoverable failure. Calendar/LMS OAuth callbacks and connector token encryption remain future work.
 
 ## Architecture
 
@@ -53,6 +54,7 @@ The model can extract source-grounded structure and draft coaching language. It 
 | LearnerProfile | User-visible, correctable, deletable study preferences used only to contextualize a Coach proposal |
 | CoachCheckIn, ReplanProposal | Friction report and replacement proposal that still requires approval |
 | ConsentAudit | Append-only grant/withdrawal history by purpose |
+| WebPushSubscription, NotificationJob | Tenant-owned browser endpoint and durable per-channel daily delivery state |
 | CohortAggregate | Future anonymized aggregate with database-enforced group size of at least 10 |
 
 ## API contracts
@@ -78,6 +80,7 @@ All protected routes require the host-only HttpOnly session cookie and resolve t
 | `POST /api/check-ins` | Draft a replan against one approved base version |
 | `POST /api/replan-proposals/:id/approve` | Supersede the base and create a newly approved immutable version |
 | `GET/POST /api/consents` | Read the audit trail or append a purpose-specific decision |
+| `GET/POST/DELETE /api/push-subscriptions/*` | Read configuration status and opt the current browser or every owned browser into/out of Web Push without exposing endpoints in URLs |
 | `GET/PUT /api/learner-profile` | Read or version-update the signed-in learner's self-reported coaching preferences |
 | `DELETE /api/documents/:id`, `/api/account` | Delete raw/structured data in the authenticated tenant |
 
@@ -109,6 +112,7 @@ Each factor is normalized to 0-100. The scheduler consumes only confirmed tasks,
 - Personal accounts are isolated tenants. No V1 institution API exists.
 - Raw uploads expire after 30 days; structured records remain until user deletion.
 - Google Sign-In verifies an ID token on the API and stores only the stable Google subject needed to link the account. Calendar and Canvas OAuth are not enabled in the current product scope.
+- Web Push is off by default. Subscriptions are tenant-scoped, consent is audited separately from email, forged endpoint URLs are constrained by HTTPS and public-address DNS checks, and the UI warns that task titles may appear on a device lock screen.
 - The extension uses `activeTab`; it reads Canvas context only after a user action and is read only.
 - Future institution analytics require separate research consent, aggregation, and a group size of at least 10. The schema has no path from cohort output to individual plans or learner profiles.
 - Production token values belong in encrypted byte columns and must be encrypted with a managed key before the connector adapters are enabled.
@@ -119,5 +123,5 @@ Each factor is normalized to 0-100. The scheduler consumes only confirmed tasks,
 2. Done: Supabase private object storage behind the object-store contract, with durable raw-file deletion retries and account-deletion receipts.
 3. Done: field-level extraction editing, manual course entry, CSRF-safe cookie sessions, email verification, and password reset.
 4. Google Sign-In is complete. Google Calendar and Canvas OAuth, token rotation, revocation, and sync jobs remain intentionally deferred.
-5. Done: notification queue, consented daily email digests, and durable asynchronous document extraction.
+5. Done: multi-channel notification queue, consented daily email and Web Push reminders, and durable asynchronous document extraction. Extension-origin delivery remains deferred until authenticated extension handoff exists.
 6. Done: request IDs, structured logs, privacy-scrubbed hosted error reporting, and backup/restore/deletion-SLA/secret-rotation runbooks. Next: record the first restore drill in a separate non-production Supabase project.

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { InMemoryRepository } from '../repository.js'
 import { DisabledEmailSender, MemoryEmailSender, type EmailSender } from './email.js'
 import { nextDailyDigestRun, processNotificationJobs } from './digest.js'
+import { MemoryWebPushSender } from './web-push.js'
 
 async function readyDigestRepository() {
   const repository = new InMemoryRepository()
@@ -85,5 +86,51 @@ describe('daily digest worker', () => {
 
     expect(result).toMatchObject({ claimed: 1, sent: 0, retried: 1, failed: 0 })
     expect(await repository.claimNotificationJobs(10, now)).toHaveLength(0)
+  })
+
+  it('sends a web push digest while email delivery remains disabled', async () => {
+    const repository = new InMemoryRepository()
+    await repository.seedDemo()
+    const user = await repository.getDemoUser()
+    await repository.saveConsent({
+      id: 'push-consent',
+      tenantId: user.tenantId,
+      userId: user.id,
+      purpose: 'web_push',
+      granted: true,
+      source: 'settings',
+      createdAt: '2026-07-24T00:00:00.000Z',
+    })
+    await repository.savePushSubscription(user.tenantId, user.id, {
+      endpoint: 'https://push.example.test/subscription-1',
+      p256dh: 'public-encryption-key-value',
+      auth: 'authentication-secret',
+    })
+    const now = new Date('2026-07-24T03:05:00.000Z')
+    await repository.scheduleDailyDigest(user.tenantId, user.id, '2026-07-24T03:00:00.000Z', 'web_push')
+    const webPushSender = new MemoryWebPushSender()
+
+    const result = await processNotificationJobs({
+      repository,
+      emailSender: new DisabledEmailSender(),
+      webPushSender,
+      appOrigin: 'https://app.example.test',
+      now,
+    })
+
+    expect(result).toMatchObject({
+      configured: true,
+      emailConfigured: false,
+      webPushConfigured: true,
+      claimed: 1,
+      sent: 1,
+      deliveries: 1,
+    })
+    expect(webPushSender.messages).toHaveLength(1)
+    expect(webPushSender.messages[0]?.payload.title).toContain('Assignment 3: API design')
+    const tomorrow = new Date(nextDailyDigestRun(now))
+    const next = await repository.claimNotificationJobs(10, tomorrow, ['web_push'])
+    expect(next).toHaveLength(1)
+    expect(next[0]?.channel).toBe('web_push')
   })
 })

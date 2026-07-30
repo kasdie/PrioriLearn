@@ -57,4 +57,4 @@ Advanced settings expose each reminder and replanning boundary after onboarding.
 
 ## Current build coverage
 
-The current build implements private account onboarding with email/password or Google Sign-In, PostgreSQL/Supabase production persistence, the complete student decision loop, API-side review/approval boundaries, deterministic scoring/scheduling, PDF/PNG/JPEG/TXT/CSV/JSON and ICS inputs, and the read-only extension preview. Google Calendar/Canvas OAuth callbacks and the institution surface remain deferred. The current build exposes no institution-facing student data.
+The current build implements private account onboarding with email/password or Google Sign-In, PostgreSQL/Supabase production persistence, the complete student decision loop, API-side review/approval boundaries, deterministic scoring/scheduling, PDF/PNG/JPEG/TXT/CSV/JSON and ICS inputs, per-browser opt-in Web Push reminders, and the read-only extension preview. Google Calendar/Canvas OAuth callbacks, authenticated extension handoff, outbound email deployment, and the institution surface remain deferred. The current build exposes no institution-facing student data.

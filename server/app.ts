@@ -26,6 +26,8 @@ import {
   TaskCreateInputSchema,
   TaskPatchInputSchema,
   UserLocaleInputSchema,
+  WebPushEndpointInputSchema,
+  WebPushSubscriptionInputSchema,
   type ConsentAudit,
   type AuthActionPurpose,
   type ImportDraft,
@@ -44,6 +46,7 @@ import { InvalidGoogleIdentityError, type GoogleTokenVerifier, verifyGoogleIdTok
 import { parseIcsPreview } from './services/ics.js'
 import { assessPriority } from './services/priority.js'
 import { processLifecycleJobs } from './services/purge.js'
+import { createWebPushSender, type WebPushSender } from './services/web-push.js'
 import {
   schedulePlan,
   scheduleWeeklyPlanWithReport,
@@ -107,6 +110,7 @@ export type ApplicationContext = {
   objectStore: ObjectStore
   aiProvider: AiProvider
   emailSender: EmailSender
+  webPushSender: WebPushSender
   errorReporter: ErrorReporter
   processExtractionQueue: () => Promise<ExtractionWorkerResult>
 }
@@ -117,6 +121,7 @@ type ApplicationOptions = {
   objectStore?: ObjectStore
   aiProvider?: AiProvider
   emailSender?: EmailSender
+  webPushSender?: WebPushSender
   errorReporter?: ErrorReporter
   googleTokenVerifier?: GoogleTokenVerifier
 }
@@ -312,6 +317,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     : new LocalObjectStore(config.storageDirectory))
   const aiProvider = options.aiProvider ?? createAiProvider(config)
   const emailSender = options.emailSender ?? createEmailSender(config)
+  const webPushSender = options.webPushSender ?? createWebPushSender(config)
   const errorReporter = options.errorReporter ?? createErrorReporter(config)
   const processExtractionQueue = () => processExtractionJobs({
     repository,
@@ -433,6 +439,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       aiProvider: aiProvider.name,
       emailProvider: emailSender.name,
       emailConfigured: emailSender.configured,
+      webPushProvider: webPushSender.name,
+      webPushConfigured: webPushSender.configured,
       errorReporter: errorReporter.name,
       errorReportingConfigured: errorReporter.configured,
       extractionQueue: 'durable',
@@ -1145,6 +1153,9 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   app.post('/api/consents', requireAuth, asyncRoute(async (request, response) => {
     const { user, tenant } = getAuth(response)
     const input = parseBody(ConsentInputSchema, request.body)
+    if (input.purpose === 'web_push') {
+      throw new ApiError(400, 'WEB_PUSH_CONSENT_REQUIRES_SUBSCRIPTION', 'Manage web push from the device notification control.')
+    }
     if (input.purpose === 'email_digest' && input.granted) {
       if (!user.emailVerifiedAt) {
         throw new ApiError(409, 'EMAIL_VERIFICATION_REQUIRED', 'Verify your email before enabling the daily digest.')
@@ -1166,6 +1177,100 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       else await repository.cancelDailyDigestJobs(tenant.id, user.id)
     }
     response.status(201).json({ consent })
+  }))
+
+  const webPushStatus = async (tenantId: string, userId: string) => {
+    const [subscriptions, consents] = await Promise.all([
+      repository.listPushSubscriptions(tenantId, userId),
+      repository.listConsents(tenantId),
+    ])
+    const consentGranted = consents
+      .filter((consent) => consent.userId === userId && consent.purpose === 'web_push')
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.granted ?? false
+    return {
+      configured: webPushSender.configured,
+      publicKey: webPushSender.configured ? webPushSender.publicKey : undefined,
+      subscriptionCount: subscriptions.length,
+      consentGranted,
+    }
+  }
+
+  app.get('/api/push-subscriptions/status', requireAuth, asyncRoute(async (_request, response) => {
+    const { user, tenant } = getAuth(response)
+    response.json(await webPushStatus(tenant.id, user.id))
+  }))
+
+  app.post('/api/push-subscriptions/check', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
+    const { endpoint } = parseBody(WebPushEndpointInputSchema, request.body)
+    const subscriptions = await repository.listPushSubscriptions(tenant.id, user.id)
+    response.json({ registered: subscriptions.some((subscription) => subscription.endpoint === endpoint) })
+  }))
+
+  app.post('/api/push-subscriptions', requireAuth, asyncRoute(async (request, response) => {
+    if (!webPushSender.configured) {
+      throw new ApiError(503, 'WEB_PUSH_NOT_CONFIGURED', 'Web push is not configured for this environment.')
+    }
+    const { user, tenant } = getAuth(response)
+    const input = parseBody(WebPushSubscriptionInputSchema, request.body)
+    await repository.savePushSubscription(tenant.id, user.id, {
+      endpoint: input.endpoint,
+      p256dh: input.keys.p256dh,
+      auth: input.keys.auth,
+      expiresAt: input.expirationTime ? new Date(input.expirationTime).toISOString() : undefined,
+    })
+    await repository.scheduleDailyDigest(tenant.id, user.id, nextDailyDigestRun(), 'web_push')
+    const consent: ConsentAudit = {
+      id: randomUUID(),
+      tenantId: tenant.id,
+      userId: user.id,
+      purpose: 'web_push',
+      granted: true,
+      source: 'settings',
+      createdAt: new Date().toISOString(),
+    }
+    await repository.saveConsent(consent)
+    response.status(201).json({ consent, status: await webPushStatus(tenant.id, user.id) })
+  }))
+
+  app.delete('/api/push-subscriptions', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
+    const { endpoint } = parseBody(WebPushEndpointInputSchema, request.body)
+    const existing = await repository.listPushSubscriptions(tenant.id, user.id)
+    const removingLast = existing.length === 1 && existing[0]?.endpoint === endpoint
+    let consent: ConsentAudit | undefined
+    if (removingLast) {
+      consent = {
+        id: randomUUID(),
+        tenantId: tenant.id,
+        userId: user.id,
+        purpose: 'web_push',
+        granted: false,
+        source: 'settings',
+        createdAt: new Date().toISOString(),
+      }
+      await repository.saveConsent(consent)
+      await repository.cancelDailyDigestJobs(tenant.id, user.id, 'web_push')
+    }
+    const removed = await repository.deletePushSubscription(tenant.id, user.id, endpoint)
+    response.json({ removed, consent, status: await webPushStatus(tenant.id, user.id) })
+  }))
+
+  app.delete('/api/push-subscriptions/all', requireAuth, asyncRoute(async (_request, response) => {
+    const { user, tenant } = getAuth(response)
+    const consent: ConsentAudit = {
+      id: randomUUID(),
+      tenantId: tenant.id,
+      userId: user.id,
+      purpose: 'web_push',
+      granted: false,
+      source: 'settings',
+      createdAt: new Date().toISOString(),
+    }
+    await repository.saveConsent(consent)
+    await repository.cancelDailyDigestJobs(tenant.id, user.id, 'web_push')
+    const removed = await repository.deletePushSubscriptions(tenant.id, user.id)
+    response.json({ removed, consent, status: await webPushStatus(tenant.id, user.id) })
   }))
 
   app.get('/api/learner-profile', requireAuth, asyncRoute(async (_request, response) => {
@@ -1261,6 +1366,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       processNotificationJobs({
         repository,
         emailSender,
+        webPushSender,
         appOrigin: config.appOrigin,
       }),
       processExtractionQueue(),
@@ -1329,5 +1435,5 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     response.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred.' } })
   })
 
-  return { app, config, repository, objectStore, aiProvider, emailSender, errorReporter, processExtractionQueue }
+  return { app, config, repository, objectStore, aiProvider, emailSender, webPushSender, errorReporter, processExtractionQueue }
 }
