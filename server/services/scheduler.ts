@@ -66,7 +66,7 @@ function fixedOffsetLocalDateParts(date: Date, utcOffsetMinutes: number): LocalD
   return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() }
 }
 
-function localDateParts(date: Date, preferences: PlanningPreferences): LocalDateParts {
+export function localDateParts(date: Date, preferences: PlanningPreferences): LocalDateParts {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: preferences.timezone,
@@ -99,7 +99,7 @@ function timeZoneOffsetMilliseconds(date: Date, timezone: string): number {
   return representedAsUtc - Math.floor(date.getTime() / 1_000) * 1_000
 }
 
-function localMinuteToUtc(localDate: Date, minute: number, preferences: PlanningPreferences): Date {
+export function localMinuteToUtc(localDate: Date, minute: number, preferences: PlanningPreferences): Date {
   const localTimestamp = Date.UTC(
     localDate.getUTCFullYear(),
     localDate.getUTCMonth(),

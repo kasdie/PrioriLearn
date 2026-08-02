@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DocumentExtractionSchema, type DocumentExtraction } from '../domain/contracts.js'
+import { DocumentExtractionSchema, type DocumentExtraction, type Locale } from '../domain/contracts.js'
 import type { Repository } from '../repository.js'
 import type { ObjectStore } from '../storage.js'
 import type { AiProvider } from './ai-provider.js'
@@ -14,11 +14,13 @@ export type ExtractionWorkerResult = {
 
 class PermanentExtractionError extends Error {}
 
-export function validateExtractionDates(extraction: DocumentExtraction): DocumentExtraction {
+export function validateExtractionDates(extraction: DocumentExtraction, locale: Locale = 'en'): DocumentExtraction {
   const warnings = [...extraction.warnings]
   const tasks = extraction.tasks.map((task) => {
     if (task.dueAt && Number.isNaN(Date.parse(task.dueAt))) {
-      warnings.push(`Deadline for "${task.title}" was not a valid timestamp and must be reviewed.`)
+      warnings.push(locale === 'vi'
+        ? `Thời hạn của "${task.title}" không phải mốc thời gian hợp lệ và cần được xem lại.`
+        : `Deadline for "${task.title}" was not a valid timestamp and must be reviewed.`)
       return { ...task, dueAt: null }
     }
     return task
@@ -48,14 +50,16 @@ export async function processExtractionJobs(input: {
       if (!document) throw new PermanentExtractionError('The queued document no longer exists.')
       if (document.rawDeletedAt) throw new PermanentExtractionError('The raw file expired before extraction completed.')
       const content = await input.objectStore.get(document.storageKey)
+      const locale = await input.repository.getTenantDefaultLocale(job.tenantId) ?? 'en'
       const documentInput = {
         filename: document.filename,
         mimeType: document.mimeType,
         content,
+        locale,
       }
       const structured = extractStructuredDocument(documentInput)
       const rawExtraction = structured?.extraction ?? await input.aiProvider.extractDocument(documentInput)
-      const extraction = validateExtractionDates(DocumentExtractionSchema.parse(rawExtraction))
+      const extraction = validateExtractionDates(DocumentExtractionSchema.parse(rawExtraction), locale)
       await input.repository.completeExtractionJob(
         job,
         extraction,

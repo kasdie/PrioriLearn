@@ -68,6 +68,26 @@ Production rollout for this checkpoint:
 
 Web Push does not require Resend, a paid custom domain, or a Vercel environment variable. Google Calendar, Canvas OAuth/authenticated extension handoff, outbound email deployment, mobile optimization, and the recorded restore drill remain deferred.
 
+## Implementation checkpoint - 2026-08-02
+
+- [x] Disable the shared demo and unverifiable password registration by default in production; keep Google Sign-In as the verified production onboarding path.
+- [x] Prevent an unverified password account from being silently linked to a matching Google identity.
+- [x] Preserve a durable account-deletion receipt after session revocation and let the signed-out user poll pending/completed/failed cleanup truth.
+- [x] Record onboarding, plan generation, editing, approval, and replan milestones on the server; derive active days, D7 retention, plan acceptance rate, and plan edit rate within the tenant boundary.
+- [x] Localize deterministic, OpenAI, CSV, JSON, and JSONL extraction evidence/warnings from the account locale, including generated coaching-mode rationale.
+- [x] Schedule digest/Web Push jobs for 09:00 in the learner's IANA timezone and format deadlines in that timezone.
+- [x] Fix the real Node ESM adapter for `web-push`, generate a local persistent VAPID pair, and verify a configured API boots with `webPushConfigured: true`.
+- [x] Re-run unit, desktop Playwright, production build, and disposable PostgreSQL/RLS coverage.
+
+Production rollout for this checkpoint:
+
+1. Copy `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY`, and `WEB_PUSH_SUBJECT` from the ignored local `.env` to the Render API environment only. Do not add the private key to Vercel.
+2. Keep `ENABLE_DEMO_ACCESS=false` and `ENABLE_PASSWORD_REGISTRATION=false` on Render while transactional email remains deferred.
+3. Redeploy Render and Vercel from the same commit. Verify `/api/health` reports Web Push configured and `/api/auth/capabilities` reports Google enabled with demo/password registration disabled.
+4. Enable notifications on one browser, run the protected daily maintenance endpoint, receive one localized reminder, then revoke that browser subscription.
+
+No database migration is introduced by this checkpoint. Outbound email, Google Calendar sync, Canvas OAuth/authenticated extension handoff, mobile optimization, institution features, the recorded restore drill, and pilot recruitment remain deferred.
+
 ## Deployment milestones
 
 ### Milestone 1: Durable private alpha

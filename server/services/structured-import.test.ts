@@ -97,6 +97,26 @@ describe('structured study-data imports', () => {
     ])
   })
 
+  it('localizes generated evidence and review warnings for Vietnamese mode', () => {
+    const result = extractStructuredDocument({
+      filename: 'hoc-ky.csv',
+      mimeType: 'text/csv',
+      locale: 'vi',
+      content: Buffer.from([
+        'course_name,task_title,due_date',
+        'Lập trình,Bài tập tích hợp,không hợp lệ',
+      ].join('\n')),
+    })
+
+    expect(result?.extraction.tasks[0]?.evidence[0]).toContain('Dòng CSV 2')
+    expect(result?.extraction.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('nhiệm vụ'),
+      expect.stringContaining('môn học'),
+      expect.stringContaining('thời hạn'),
+    ]))
+    expect(result?.extraction.warnings.join(' ')).not.toContain('task(s)')
+  })
+
   it('returns null for a valid structured file with no recognized study fields', () => {
     const result = extractStructuredDocument({
       filename: 'unknown.csv',

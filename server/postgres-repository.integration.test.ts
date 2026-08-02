@@ -426,6 +426,32 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
     })).rejects.toMatchObject({ code: 'PLANNING_PREFERENCES_VERSION_CONFLICT' })
   })
 
+  test('product metrics derive activation, plan rates, and active days inside the tenant boundary', async () => {
+    const user = await repository.createPersonalAccount({
+      email: 'metrics-owner@example.test',
+      password: 'metrics-password',
+      name: 'Metrics Owner',
+      locale: 'vi',
+    })
+    expect(await repository.getTenantDefaultLocale(user.tenantId)).toBe('vi')
+
+    for (const name of ['workspace_opened', 'onboarding_completed', 'plan_generated', 'plan_edited', 'plan_approved']) {
+      await repository.saveEvent({ tenantId: user.tenantId, userId: user.id, name, properties: {} })
+    }
+
+    expect(await repository.getMetrics(user.tenantId)).toMatchObject({
+      workspace_opened: 1,
+      onboarding_completed: 1,
+      plan_generated: 1,
+      plan_edited: 1,
+      plan_approved: 1,
+      active_days: 1,
+      d7_retained: 0,
+      plan_acceptance_rate: 1,
+      plan_edit_rate: 1,
+    })
+  })
+
   test('the lifecycle claim capability leases a tenant job and schedules a retry', async () => {
     const alice = await repository.findUserByEmail('alice@example.test')
     if (!alice) throw new Error('Test user was not created.')

@@ -22,6 +22,7 @@ import {
   LogOut,
   Play,
   Plus,
+  RefreshCw,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -43,11 +44,92 @@ import { usePlanFlow } from './features/plan/usePlanFlow'
 import { PlanningAssistant } from './features/planning/PlanningAssistant'
 import { WeeklyPlanBoard } from './features/planning/WeeklyPlanBoard'
 import { useSession } from './features/session/useSession'
-import { ApiClientError, prioriApi, userFacingError, type ApiAvailabilityBlock, type ApiConsent, type ApiCourse, type ApiDashboard, type ApiLearnerProfile, type ApiLearnerSignal, type ApiMetrics, type ApiPlanningPreferences, type ApiReplanProposal, type ApiSession, type ApiSourceDocument, type ApiTask } from './lib/api'
+import { ApiClientError, prioriApi, userFacingError, type ApiAccountDeletionReceipt, type ApiAvailabilityBlock, type ApiConsent, type ApiCourse, type ApiDashboard, type ApiLearnerProfile, type ApiLearnerSignal, type ApiMetrics, type ApiPlanningPreferences, type ApiReplanProposal, type ApiSession, type ApiSourceDocument, type ApiTask } from './lib/api'
 import './App.css'
 
 type Locale = 'vi' | 'en'
 type View = 'today' | 'plan' | 'imports' | 'coach' | 'settings'
+const deletionReceiptStorageKey = 'priorilearn_deletion_receipt'
+
+function readDeletionReceipt(): ApiAccountDeletionReceipt | null {
+  try {
+    const value = window.localStorage.getItem(deletionReceiptStorageKey)
+    if (!value) return null
+    const parsed = JSON.parse(value) as Partial<ApiAccountDeletionReceipt>
+    if (!parsed.id || !parsed.tenantId || !['pending', 'completed', 'failed'].includes(parsed.status ?? '')) return null
+    return parsed as ApiAccountDeletionReceipt
+  } catch {
+    return null
+  }
+}
+
+function persistDeletionReceipt(receipt: ApiAccountDeletionReceipt | null) {
+  if (receipt) window.localStorage.setItem(deletionReceiptStorageKey, JSON.stringify(receipt))
+  else window.localStorage.removeItem(deletionReceiptStorageKey)
+}
+
+function consentPurposeLabel(purpose: ApiConsent['purpose'], locale: Locale): string {
+  const labels: Record<ApiConsent['purpose'], Record<Locale, string>> = {
+    product_terms: { vi: 'Dữ liệu tài khoản cốt lõi', en: 'Core account data' },
+    calendar_read: { vi: 'Đọc Google Calendar', en: 'Google Calendar read' },
+    canvas_read: { vi: 'Đọc Canvas', en: 'Canvas read' },
+    email_digest: { vi: 'Email tổng hợp', en: 'Email digest' },
+    web_push: { vi: 'Thông báo trên thiết bị', en: 'Device notifications' },
+    research_metrics: { vi: 'Nghiên cứu tổng hợp', en: 'Aggregate research' },
+  }
+  return labels[purpose][locale]
+}
+
+function DeletionReceiptScreen({
+  locale,
+  receipt,
+  busy,
+  onLocaleChange,
+  onRefresh,
+  onDismiss,
+}: {
+  locale: Locale
+  receipt: ApiAccountDeletionReceipt
+  busy: boolean
+  onLocaleChange: (locale: Locale) => void
+  onRefresh: () => void
+  onDismiss: () => void
+}) {
+  const status = receipt.status === 'pending'
+    ? (locale === 'vi' ? 'Đang xóa dữ liệu' : 'Deletion in progress')
+    : receipt.status === 'completed'
+      ? (locale === 'vi' ? 'Đã xóa hoàn tất' : 'Deletion complete')
+      : (locale === 'vi' ? 'Cần xử lý thêm' : 'Deletion needs attention')
+  const detail = receipt.status === 'pending'
+    ? (locale === 'vi' ? 'Phiên đăng nhập đã bị thu hồi. Tệp riêng tư và dữ liệu còn lại đang được dọn bằng hàng đợi an toàn.' : 'Your sessions are revoked. Private files and remaining data are being removed by the durable cleanup queue.')
+    : receipt.status === 'completed'
+      ? (locale === 'vi' ? 'Tài khoản, dữ liệu có cấu trúc và tệp riêng tư đã được xóa.' : 'The account, structured records, and private files have been removed.')
+      : (locale === 'vi' ? 'Một bước dọn dữ liệu không thể hoàn tất tự động. Hãy giữ mã biên nhận này để kiểm tra vận hành.' : 'A cleanup step could not finish automatically. Keep this receipt reference for operational follow-up.')
+
+  return <main className="deletion-receipt-screen">
+    <header className="deletion-receipt-header">
+      <div className="brand" aria-label="PrioriLearn"><span className="brand-mark"><Focus size={19} strokeWidth={2.6} /></span><span>priori<span>learn</span></span></div>
+      <div className="language-switch" aria-label={locale === 'vi' ? 'Ngôn ngữ' : 'Language'}>
+        <button className={locale === 'vi' ? 'selected' : ''} onClick={() => onLocaleChange('vi')} type="button">VI</button>
+        <button className={locale === 'en' ? 'selected' : ''} onClick={() => onLocaleChange('en')} type="button">EN</button>
+      </div>
+    </header>
+    <section className={`deletion-receipt-content ${receipt.status}`} aria-live="polite">
+      <span className="deletion-receipt-icon">{receipt.status === 'completed' ? <CircleCheck size={30} /> : receipt.status === 'failed' ? <CircleAlert size={30} /> : <LoaderCircle className={busy ? 'inline-spinner' : ''} size={30} />}</span>
+      <p className="eyebrow"><ShieldCheck size={15} /> {locale === 'vi' ? 'Biên nhận quyền riêng tư' : 'Privacy receipt'}</p>
+      <h1>{status}</h1>
+      <p>{detail}</p>
+      <dl>
+        <div><dt>{locale === 'vi' ? 'Mã biên nhận' : 'Receipt ID'}</dt><dd>{receipt.id}</dd></div>
+        <div><dt>{locale === 'vi' ? 'Yêu cầu lúc' : 'Requested'}</dt><dd>{new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(receipt.createdAt))}</dd></div>
+      </dl>
+      <div className="deletion-receipt-actions">
+        {receipt.status === 'pending' && <button className="secondary-button" type="button" disabled={busy} onClick={onRefresh}><RefreshCw size={16} /> {locale === 'vi' ? 'Kiểm tra lại' : 'Check again'}</button>}
+        <button className="primary-button" type="button" onClick={onDismiss}>{locale === 'vi' ? 'Quay lại đăng nhập' : 'Return to sign in'}</button>
+      </div>
+    </section>
+  </main>
+}
 const copy = {
   vi: {
     today: 'Hôm nay',
@@ -179,6 +261,8 @@ function App() {
   const [exportBusy, setExportBusy] = useState(false)
   const [deletionConfirmation, setDeletionConfirmation] = useState('')
   const [deletionBusy, setDeletionBusy] = useState(false)
+  const [deletionReceipt, setDeletionReceipt] = useState<ApiAccountDeletionReceipt | null>(() => readDeletionReceipt())
+  const [deletionReceiptBusy, setDeletionReceiptBusy] = useState(false)
   const [sourceDocuments, setSourceDocuments] = useState<ApiSourceDocument[]>([])
   const [sourceDocumentsNextCursor, setSourceDocumentsNextCursor] = useState<string | undefined>()
   const [sourceDocumentsBusy, setSourceDocumentsBusy] = useState(false)
@@ -188,6 +272,7 @@ function App() {
   const documentInputRef = useRef<HTMLInputElement>(null)
   const calendarInputRef = useRef<HTMLInputElement>(null)
   const accountMenuRef = useRef<HTMLDivElement>(null)
+  const deletionReceiptRequestRef = useRef(false)
   const t = copy[locale]
   const recommendation = dashboard?.recommendation ?? null
   const rankedTasks = useMemo(() => dashboard?.rankedTasks ?? [], [dashboard?.rankedTasks])
@@ -208,6 +293,33 @@ function App() {
     if (!existing || new Date(consent.createdAt) > new Date(existing.createdAt)) latest[consent.purpose] = consent
     return latest
   }, {}), [consents])
+  const consentHistory = useMemo(() => [...consents]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, 8), [consents])
+
+  const refreshDeletionReceipt = useCallback(async () => {
+    const currentReceipt = readDeletionReceipt()
+    if (!currentReceipt || deletionReceiptRequestRef.current) return
+    deletionReceiptRequestRef.current = true
+    setDeletionReceiptBusy(true)
+    try {
+      const refreshed = await prioriApi.deletionReceipt(currentReceipt.tenantId, currentReceipt.id)
+      setDeletionReceipt(refreshed)
+      persistDeletionReceipt(refreshed)
+    } catch {
+      // Keep the last durable receipt visible when the API is sleeping or temporarily unavailable.
+    } finally {
+      deletionReceiptRequestRef.current = false
+      setDeletionReceiptBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (session || deletionReceipt?.status !== 'pending') return
+    void refreshDeletionReceipt()
+    const timer = window.setInterval(() => void refreshDeletionReceipt(), 15_000)
+    return () => window.clearInterval(timer)
+  }, [deletionReceipt?.status, refreshDeletionReceipt, session])
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -550,7 +662,6 @@ function App() {
     const approved = await planFlow.approve()
     if (approved) {
       setToast(locale === 'vi' ? 'Kế hoạch đã được khóa theo lịch của bạn.' : 'Your plan is now locked to your schedule.')
-      void prioriApi.track('plan_approved').catch(() => undefined)
     }
   }
 
@@ -639,7 +750,6 @@ function App() {
       setReplanApproved(true)
       setReplanOpen(false)
       setToast(locale === 'vi' ? 'Kế hoạch mới đã sẵn sàng.' : 'Your updated plan is ready.')
-      void prioriApi.track('replan_approved').catch(() => undefined)
     } catch {
       setToast(locale === 'vi' ? 'Phương án đã đổi. Hãy mở lại để xem bản mới nhất.' : 'The proposal changed. Reopen it to review the latest version.')
     } finally {
@@ -745,7 +855,9 @@ function App() {
     if (deletionBusy) return
     setDeletionBusy(true)
     try {
-      await prioriApi.requestAccountDeletion(deletionConfirmation)
+      const receipt = await prioriApi.requestAccountDeletion(deletionConfirmation)
+      setDeletionReceipt(receipt)
+      persistDeletionReceipt(receipt)
       await sessionFlow.logout()
       clearWorkspace()
     } catch (error) {
@@ -801,6 +913,19 @@ function App() {
   }
 
   if (!session) {
+    if (deletionReceipt) {
+      return <DeletionReceiptScreen
+        locale={locale}
+        receipt={deletionReceipt}
+        busy={deletionReceiptBusy}
+        onLocaleChange={setLocale}
+        onRefresh={() => void refreshDeletionReceipt()}
+        onDismiss={() => {
+          persistDeletionReceipt(null)
+          setDeletionReceipt(null)
+        }}
+      />
+    }
     return (
       <AuthScreen
         locale={locale}
@@ -1021,12 +1146,12 @@ function App() {
                 <div className="page-heading compact"><div><p className="eyebrow"><ShieldCheck size={15} /> {locale === 'vi' ? 'Kiểm soát dữ liệu' : 'Data controls'}</p><h1 id="settings-title">{locale === 'vi' ? 'Quyền riêng tư và dữ liệu' : 'Privacy and data'}</h1><p className="subhead">{locale === 'vi' ? 'Mỗi quyền có mục đích riêng và có thể rút lại mà không làm thay đổi dữ liệu đã xác nhận.' : 'Each permission has a specific purpose and can be withdrawn without changing confirmed data.'}</p></div></div>
                 <div className="settings-grid">
                   <LearnerProfilePanel locale={locale} profile={learnerProfile} busy={settingsBusy} onSave={saveLearnerProfile} />
-                  <section className="settings-panel"><div className="settings-panel-heading"><div><h2>{locale === 'vi' ? 'Quyền dữ liệu' : 'Data permissions'}</h2><p>{locale === 'vi' ? 'Thay đổi được ghi vào lịch sử đồng ý của bạn.' : 'Every change is recorded in your consent history.'}</p></div>{settingsBusy && <LoaderCircle className="inline-spinner" size={18} />}</div><div className="permission-list">{([
-                    { purpose: 'research_metrics', title: locale === 'vi' ? 'Nghiên cứu tổng hợp' : 'Aggregate research', detail: locale === 'vi' ? 'Cho phép dùng dữ liệu đã tổng hợp, không định danh.' : 'Allow anonymized aggregate research only.' },
-                  ] as const).map(({ purpose, title, detail }) => {
-                    const granted = consentByPurpose[purpose]?.granted ?? false
-                    return <label className="permission-row" key={purpose}><span><strong>{title}</strong><small>{detail}</small></span><input type="checkbox" checked={granted} disabled={settingsBusy} onChange={(event) => void updateConsent(purpose, event.target.checked)} /></label>
-                  })}</div></section>
+                  <section className="settings-panel settings-permissions"><div className="settings-panel-heading"><div><h2>{locale === 'vi' ? 'Quyền dữ liệu' : 'Data permissions'}</h2><p>{locale === 'vi' ? 'Mục đích, thời hạn lưu và mọi thay đổi đồng ý đều được trình bày riêng.' : 'Purpose, retention, and every consent change are shown separately.'}</p></div>{settingsBusy && <LoaderCircle className="inline-spinner" size={18} />}</div><div className="permission-list">
+                    <div className="permission-row permission-static"><span><strong>{locale === 'vi' ? 'Dữ liệu học tập cốt lõi' : 'Core study data'}</strong><small>{locale === 'vi' ? 'Tệp gốc tự xóa sau 30 ngày; dữ liệu đã xác nhận được giữ tới khi bạn xóa tài khoản.' : 'Raw files expire after 30 days; confirmed records remain until account deletion.'}</small></span><span className="permission-state active">{locale === 'vi' ? 'Đang dùng' : 'In use'}</span></div>
+                    <div className="permission-row permission-static"><span><strong>Google Calendar</strong><small>{locale === 'vi' ? 'Không có token hoặc đồng bộ nền trong bản hiện tại.' : 'No token or background synchronization exists in this build.'}</small></span><span className="permission-state">{locale === 'vi' ? 'Chưa kết nối' : 'Not connected'}</span></div>
+                    <div className="permission-row permission-static"><span><strong>Canvas</strong><small>{locale === 'vi' ? 'Extension chỉ đọc trang đang mở sau thao tác của bạn.' : 'The extension reads only the open page after your action.'}</small></span><span className="permission-state">{locale === 'vi' ? 'Chỉ đọc' : 'Read only'}</span></div>
+                    <label className="permission-row"><span><strong>{locale === 'vi' ? 'Nghiên cứu tổng hợp' : 'Aggregate research'}</strong><small>{locale === 'vi' ? 'Cho phép dùng số liệu tổng hợp, không định danh; có thể rút lại độc lập.' : 'Allow anonymized aggregate metrics; revoke independently at any time.'}</small></span><input type="checkbox" checked={consentByPurpose.research_metrics?.granted ?? false} disabled={settingsBusy} onChange={(event) => void updateConsent('research_metrics', event.target.checked)} /></label>
+                  </div>{consentHistory.length > 0 && <div className="consent-history"><h3>{locale === 'vi' ? 'Lịch sử thay đổi gần đây' : 'Recent consent history'}</h3>{consentHistory.map((consent) => <div className="consent-history-row" key={consent.id}><span><strong>{consentPurposeLabel(consent.purpose, locale)}</strong><small>{new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(consent.createdAt))}</small></span><span className={`permission-state ${consent.granted ? 'active' : ''}`}>{consent.granted ? (locale === 'vi' ? 'Đã cho phép' : 'Granted') : (locale === 'vi' ? 'Đã rút lại' : 'Revoked')}</span></div>)}</div>}</section>
                   <WebPushSettings locale={locale} />
                   <section className="settings-panel"><div className="settings-panel-heading"><div><h2>{locale === 'vi' ? 'Xuất dữ liệu' : 'Export your data'}</h2><p>{locale === 'vi' ? 'Tải một tệp JSON gồm dữ liệu có cấu trúc, kế hoạch và lịch sử đồng ý. Tệp gốc không được kèm theo.' : 'Download a JSON file with your structured data, plans, and consent history. Original files are not included.'}</p></div></div><button className="secondary-button" type="button" disabled={exportBusy} aria-busy={exportBusy} onClick={() => void downloadExport()}><Download size={17} /> {locale === 'vi' ? 'Tải bản xuất dữ liệu' : 'Download export'}</button></section>
                   <section className="settings-panel settings-danger"><div className="settings-panel-heading"><div><h2>{locale === 'vi' ? 'Xóa tài khoản' : 'Delete account'}</h2><p>{locale === 'vi' ? 'Nhập email để bắt đầu xóa. Phiên đăng nhập bị thu hồi ngay; tệp gốc và dữ liệu còn lại được dọn theo biên nhận.' : 'Enter your email to begin deletion. Sessions are revoked immediately; raw files and remaining data are cleaned through the deletion receipt.'}</p></div></div><label className="delete-confirmation">{locale === 'vi' ? `Nhập ${session.user.email} để xác nhận` : `Enter ${session.user.email} to confirm`}<input type="email" autoComplete="email" value={deletionConfirmation} onChange={(event) => setDeletionConfirmation(event.target.value)} /></label><button className="danger-button" type="button" disabled={deletionBusy || deletionConfirmation.trim().toLowerCase() !== session.user.email} aria-busy={deletionBusy} onClick={() => void requestAccountDeletion()}><Trash2 size={17} /> {locale === 'vi' ? 'Bắt đầu xóa tài khoản' : 'Start account deletion'}</button></section>

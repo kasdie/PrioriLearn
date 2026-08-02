@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns'
 import { Agent } from 'node:https'
 import { BlockList, type LookupFunction } from 'node:net'
-import * as webPush from 'web-push'
+import webPush from 'web-push'
 import type { AppConfig } from '../config.js'
 import { isValidWebPushEndpoint, type WebPushSubscription } from '../domain/contracts.js'
 

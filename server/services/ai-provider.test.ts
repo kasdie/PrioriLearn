@@ -21,4 +21,18 @@ describe('OpenAI document input', () => {
       },
     ])
   })
+
+  it('asks the model to keep extraction evidence in the selected account language', () => {
+    const content = buildDocumentExtractionContent({
+      filename: 'de-cuong.txt',
+      mimeType: 'text/plain',
+      content: Buffer.from('Noi dung mon hoc'),
+      locale: 'vi',
+    })
+
+    expect(content).toEqual([expect.objectContaining({
+      type: 'input_text',
+      text: expect.stringContaining('entirely in Vietnamese'),
+    })])
+  })
 })

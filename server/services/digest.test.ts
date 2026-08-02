@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { PlanningPreferences } from '../domain/contracts.js'
 import { InMemoryRepository } from '../repository.js'
 import { DisabledEmailSender, MemoryEmailSender, type EmailSender } from './email.js'
 import { nextDailyDigestRun, processNotificationJobs } from './digest.js'
@@ -21,6 +22,28 @@ async function readyDigestRepository() {
 }
 
 describe('daily digest worker', () => {
+  it('schedules 09:00 in the learner timezone instead of a fixed UTC hour', () => {
+    const preferences: PlanningPreferences = {
+      id: 'preferences-1',
+      tenantId: 'tenant-1',
+      userId: 'user-1',
+      locale: 'vi',
+      coachMode: 'focus',
+      dailyMinutes: 90,
+      timezone: 'Asia/Ho_Chi_Minh',
+      utcOffsetMinutes: 420,
+      windows: [],
+      version: 1,
+      createdAt: '2026-07-24T00:00:00.000Z',
+      updatedAt: '2026-07-24T00:00:00.000Z',
+    }
+
+    expect(nextDailyDigestRun(new Date('2026-07-24T00:30:00.000Z'), preferences))
+      .toBe('2026-07-24T02:00:00.000Z')
+    expect(nextDailyDigestRun(new Date('2026-07-24T03:00:00.000Z'), preferences))
+      .toBe('2026-07-25T02:00:00.000Z')
+  })
+
   it('sends one ranked digest and schedules the next day atomically', async () => {
     const { repository, user } = await readyDigestRepository()
     const now = new Date('2026-07-24T03:05:00.000Z')

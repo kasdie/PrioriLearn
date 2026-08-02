@@ -81,6 +81,7 @@ export interface Repository {
   findUserByEmail(email: string): Awaitable<User | undefined>
   findUserByGoogleSubject(googleSubject: string): Awaitable<User | undefined>
   getUser(tenantId: string, userId: string): Awaitable<User | undefined>
+  getTenantDefaultLocale(tenantId: string): Awaitable<User['locale'] | undefined>
   updateUserLocale(tenantId: string, userId: string, locale: User['locale']): Awaitable<User | undefined>
   linkGoogleSubject(tenantId: string, userId: string, googleSubject: string): Awaitable<User | undefined>
   markEmailVerified(tenantId: string, userId: string): Awaitable<User | undefined>
@@ -166,6 +167,7 @@ export interface Repository {
   completeLifecycleJob(job: LifecycleJob, completedAt?: Date): Awaitable<boolean>
   failLifecycleJob(job: LifecycleJob, message: string, failedAt?: Date): Awaitable<'retrying' | 'failed'>
   requestAccountDeletion(tenantId: string, userId: string): Awaitable<AccountDeletionReceipt>
+  getDeletionReceipt(tenantId: string, receiptId: string): Awaitable<AccountDeletionReceipt | undefined>
   saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt'>): Awaitable<ProductEvent>
   getMetrics(tenantId: string): Awaitable<Record<string, number>>
   deleteTenant(tenantId: string): Awaitable<void>
@@ -406,6 +408,11 @@ export class InMemoryRepository implements Repository {
   getUser(tenantId: string, userId: string): User | undefined {
     const user = this.users.get(userId)
     return user?.tenantId === tenantId && !this.deletingTenants.has(tenantId) ? user : undefined
+  }
+
+  getTenantDefaultLocale(tenantId: string): User['locale'] | undefined {
+    if (this.deletingTenants.has(tenantId)) return undefined
+    return [...this.users.values()].find((user) => user.tenantId === tenantId)?.locale
   }
 
   updateUserLocale(tenantId: string, userId: string, locale: User['locale']): User | undefined {
@@ -1352,6 +1359,11 @@ export class InMemoryRepository implements Repository {
     return receipt
   }
 
+  getDeletionReceipt(tenantId: string, receiptId: string): AccountDeletionReceipt | undefined {
+    const receipt = this.deletionReceipts.get(receiptId)
+    return receipt?.tenantId === tenantId ? receipt : undefined
+  }
+
   saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt'>): ProductEvent {
     const saved = { ...event, id: randomUUID(), createdAt: nowIso() }
     this.events.set(saved.id, saved)
@@ -1360,10 +1372,27 @@ export class InMemoryRepository implements Repository {
 
   getMetrics(tenantId: string): Record<string, number> {
     const tenantEvents = [...this.events.values()].filter((event) => event.tenantId === tenantId)
-    return tenantEvents.reduce<Record<string, number>>((totals, event) => {
+    const metrics = tenantEvents.reduce<Record<string, number>>((totals, event) => {
       totals[event.name] = (totals[event.name] ?? 0) + 1
       return totals
     }, {})
+    const workspaceEvents = tenantEvents.filter((event) => event.name === 'workspace_opened')
+    metrics.active_days = new Set(workspaceEvents.map((event) => event.createdAt.slice(0, 10))).size
+    const createdAt = [...this.users.values()]
+      .filter((user) => user.tenantId === tenantId)
+      .map((user) => Date.parse(user.createdAt))
+      .sort((left, right) => left - right)[0]
+    metrics.d7_retained = createdAt !== undefined && workspaceEvents.some((event) => {
+      const elapsed = Date.parse(event.createdAt) - createdAt
+      return elapsed >= 7 * 86_400_000 && elapsed < 8 * 86_400_000
+    }) ? 1 : 0
+    metrics.plan_acceptance_rate = metrics.plan_generated
+      ? (metrics.plan_approved ?? 0) / metrics.plan_generated
+      : 0
+    metrics.plan_edit_rate = metrics.plan_generated
+      ? (metrics.plan_edited ?? 0) / metrics.plan_generated
+      : 0
+    return metrics
   }
 
   deleteTenant(tenantId: string): void {

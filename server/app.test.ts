@@ -50,6 +50,43 @@ describe('PrioriLearn API', () => {
     expect(response.headers['x-request-id']).toBe('test-request-123')
   })
 
+  it('publishes safe auth capabilities and can disable shared or unverifiable signup paths', async () => {
+    const capabilities = await request(context.app).get('/api/auth/capabilities').expect(200)
+    expect(capabilities.body).toEqual({
+      passwordLoginEnabled: true,
+      passwordRegistrationEnabled: true,
+      passwordResetEnabled: false,
+      googleSignInConfigured: Boolean(context.config.googleClientId),
+      demoAccessEnabled: true,
+    })
+
+    const locked = await createApplication({
+      config: {
+        maintenanceSecret: 'test-secret',
+        persistenceDriver: 'memory',
+        demoAccessEnabled: false,
+        passwordRegistrationEnabled: false,
+        googleClientId: undefined,
+      },
+      objectStore: new MemoryObjectStore(),
+      aiProvider: new MockAiProvider(),
+    })
+    await request(locked.app).get('/api/auth/capabilities').expect(200, {
+      passwordLoginEnabled: true,
+      passwordRegistrationEnabled: false,
+      passwordResetEnabled: false,
+      googleSignInConfigured: false,
+      demoAccessEnabled: false,
+    })
+    const registration = await request(locked.app)
+      .post('/api/auth/register')
+      .send({ email: 'blocked@example.com', password: 'strong-password', name: 'Blocked User', locale: 'en' })
+      .expect(503)
+    expect(registration.body.error.code).toBe('PASSWORD_REGISTRATION_DISABLED')
+    const demo = await request(locked.app).post('/api/auth/demo').expect(404)
+    expect(demo.body.error.code).toBe('DEMO_ACCESS_DISABLED')
+  })
+
   it('shares one AI request quota across AI-backed routes for each account', async () => {
     const limited = await createApplication({
       config: { maintenanceSecret: 'test-secret', persistenceDriver: 'memory', aiRateLimitMax: 2 },
@@ -270,6 +307,7 @@ describe('PrioriLearn API', () => {
     expect(generated.body.plan.items.length).toBeGreaterThan(0)
     expect(generated.body.plan.items[0].firstStep).toContain('Mở')
     expect(generated.body.plan.rationale).toContain('Kế hoạch')
+    expect(generated.body.plan.rationale).toContain('tập trung')
 
     const exported = await request(context.app).get('/api/account/export').set(authorized()).expect(200)
     expect(exported.body.planningPreferences).toMatchObject({ version: 1, windows: expect.any(Array) })
@@ -293,6 +331,13 @@ describe('PrioriLearn API', () => {
 
     const dashboard = await request(context.app).get('/api/dashboard').set(privateAuth).expect(200)
     expect(dashboard.body.rankedTasks).toEqual([])
+    const activationMetrics = await request(context.app).get('/api/metrics/me').set(privateAuth).expect(200)
+    expect(activationMetrics.body.metrics).toMatchObject({
+      onboarding_completed: 1,
+      workspace_opened: 1,
+      active_days: 1,
+      d7_retained: 0,
+    })
 
     await request(context.app).get('/api/me').set(privateAuth).expect(200)
     const restoredSession = await request(context.app).get('/api/auth/session').set(privateAuth).expect(200)
@@ -335,11 +380,22 @@ describe('PrioriLearn API', () => {
     expect(first.body.user.id).toBe(second.body.user.id)
     expect(first.body.user).not.toHaveProperty('googleSubject')
     expect(sessionCookie(first)).toContain('priorilearn_session=')
+    const googleMetrics = await request(google.app)
+      .get('/api/metrics/me')
+      .set('Cookie', sessionCookie(second))
+      .expect(200)
+    expect(googleMetrics.body.metrics).toMatchObject({ onboarding_completed: 1 })
 
     const existing = await request(google.app)
       .post('/api/auth/register')
       .send({ email: 'existing@example.com', password: 'strong-password', name: 'Existing User', locale: 'en' })
       .expect(201)
+    const unsafeLink = await request(google.app)
+      .post('/api/auth/google')
+      .send({ credential: 'linked', locale: 'en' })
+      .expect(409)
+    expect(unsafeLink.body.error.code).toBe('GOOGLE_EMAIL_LINK_REQUIRES_VERIFICATION')
+    await google.repository.markEmailVerified(existing.body.user.tenantId, existing.body.user.id)
     const linked = await request(google.app)
       .post('/api/auth/google')
       .send({ credential: 'linked', locale: 'en' })
@@ -948,6 +1004,14 @@ describe('PrioriLearn API', () => {
       .expect(200)
     expect(replanApproval.body.plan.status).toBe('approved')
     expect(replanApproval.body.plan.version).toBeGreaterThan(proposedPlan.version)
+    const metrics = await request(context.app).get('/api/metrics/me').set(authorized()).expect(200)
+    expect(metrics.body.metrics).toMatchObject({
+      plan_generated: 1,
+      plan_approved: 1,
+      replan_approved: 1,
+      plan_acceptance_rate: 1,
+      plan_edit_rate: 0,
+    })
   })
 
   it('keeps one active and one pending plan through generate, edit, approve, and reload', async () => {
@@ -994,6 +1058,14 @@ describe('PrioriLearn API', () => {
       .send({ expectedVersion: edited.body.plan.version })
       .expect(200)
     expect(approved.body.plan.status).toBe('approved')
+    const metrics = await request(context.app).get('/api/metrics/me').set(authorized()).expect(200)
+    expect(metrics.body.metrics).toMatchObject({
+      plan_generated: 1,
+      plan_edited: 1,
+      plan_approved: 1,
+      plan_acceptance_rate: 1,
+      plan_edit_rate: 1,
+    })
 
     const afterApproval = await request(context.app).get('/api/plans/current').set(authorized()).expect(200)
     expect(afterApproval.body.active.id).toBe(edited.body.plan.id)
@@ -1164,8 +1236,21 @@ describe('PrioriLearn API', () => {
       .expect(202)
     expect(deletion.body.receipt).toMatchObject({ status: 'pending' })
     await request(context.app).get('/api/me').set(authorized()).expect(401)
+    await request(context.app)
+      .get(`/api/account/deletion-receipts/${deletion.body.receipt.id}`)
+      .query({ tenantId: deletion.body.receipt.tenantId })
+      .expect(200, { receipt: deletion.body.receipt })
 
     await expect(processLifecycleJobs(context.repository, context.objectStore, 25, new Date(Date.now() + 60_000)))
       .resolves.toMatchObject({ claimed: 1, completed: 1, failed: 0 })
+    const completed = await request(context.app)
+      .get(`/api/account/deletion-receipts/${deletion.body.receipt.id}`)
+      .query({ tenantId: deletion.body.receipt.tenantId })
+      .expect(200)
+    expect(completed.body.receipt).toMatchObject({ status: 'completed' })
+    await request(context.app)
+      .get(`/api/account/deletion-receipts/${deletion.body.receipt.id}`)
+      .query({ tenantId: '00000000-0000-4000-8000-000000000001' })
+      .expect(404)
   })
 })

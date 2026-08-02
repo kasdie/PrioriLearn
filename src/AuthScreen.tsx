@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, CircleAlert, CircleCheck, Eye, EyeOff, Focus, ShieldCheck, Sparkles } from 'lucide-react'
 import focusImage from './assets/study-focus.png'
-import { ApiClientError, prioriApi, type ApiSession } from './lib/api'
+import { ApiClientError, prioriApi, type ApiAuthCapabilities, type ApiSession } from './lib/api'
 import { loadGoogleIdentity } from './lib/google-identity'
 import './AuthScreen.css'
 
@@ -114,6 +114,10 @@ function readableAuthError(error: unknown, locale: Locale): string {
       vi: 'Tài khoản Google này đang được liên kết với một tài khoản khác.',
       en: 'This Google account is already linked to another account.',
     },
+    GOOGLE_EMAIL_LINK_REQUIRES_VERIFICATION: {
+      vi: 'Email này thuộc một tài khoản chưa xác minh nên chưa thể tự động liên kết với Google.',
+      en: 'This email belongs to an unverified account and cannot be linked to Google automatically.',
+    },
     GOOGLE_SIGN_IN_NOT_CONFIGURED: {
       vi: 'Đăng nhập Google chưa được cấu hình cho môi trường này.',
       en: 'Google Sign-In is not configured for this environment.',
@@ -125,6 +129,14 @@ function readableAuthError(error: unknown, locale: Locale): string {
     EMAIL_DELIVERY_FAILED: {
       vi: 'Không thể gửi email lúc này. Vui lòng thử lại sau.',
       en: 'The email could not be sent. Please try again shortly.',
+    },
+    PASSWORD_REGISTRATION_DISABLED: {
+      vi: 'Tài khoản mới hiện được tạo bằng Google để xác minh danh tính an toàn.',
+      en: 'New accounts currently use Google so the identity can be verified safely.',
+    },
+    DEMO_ACCESS_DISABLED: {
+      vi: 'Không gian học thử không được bật trên website chính thức.',
+      en: 'The demo workspace is not enabled on the production website.',
     },
   }
   return messages[error.code]?.[locale] ?? (locale === 'vi'
@@ -139,12 +151,36 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [capabilities, setCapabilities] = useState<ApiAuthCapabilities>({
+    passwordLoginEnabled: true,
+    passwordRegistrationEnabled: false,
+    passwordResetEnabled: false,
+    googleSignInConfigured: false,
+    demoAccessEnabled: false,
+  })
   const googleButtonRef = useRef<HTMLDivElement>(null)
   const googleInitializedRef = useRef(false)
   const googleCredentialHandlerRef = useRef<(credential: string) => void>(() => undefined)
   const googleSignInInFlightRef = useRef(false)
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
+  const googleSignInEnabled = Boolean(googleClientId && capabilities.googleSignInConfigured)
+  const alternativeAccessEnabled = googleSignInEnabled || capabilities.demoAccessEnabled
   const t = authCopy[locale]
+
+  useEffect(() => {
+    let active = true
+    void prioriApi.authCapabilities()
+      .then((next) => {
+        if (!active) return
+        setCapabilities(next)
+        if (!next.passwordRegistrationEnabled) setMode((current) => current === 'register' ? 'login' : current)
+        if (!next.passwordResetEnabled) setMode((current) => current === 'forgot' ? 'login' : current)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
 
   const selectMode = (nextMode: AuthMode) => {
     setMode(nextMode)
@@ -173,7 +209,6 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
           locale,
         })
       await onAuthenticated(session)
-      if (mode === 'register') void prioriApi.track('onboarding_completed').catch(() => undefined)
     } catch (submitError) {
       setError(readableAuthError(submitError, locale))
     } finally {
@@ -216,7 +251,7 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
   }, [signInWithGoogle])
 
   useEffect(() => {
-    if (!googleClientId || !googleButtonRef.current) return
+    if (!googleSignInEnabled || !googleClientId || !googleButtonRef.current) return
     let active = true
     const button = googleButtonRef.current
     button.replaceChildren()
@@ -245,7 +280,7 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
     return () => {
       active = false
     }
-  }, [googleClientId, locale, mode, signInWithGoogle])
+  }, [googleClientId, googleSignInEnabled, locale, mode, signInWithGoogle])
 
   return (
     <main className="auth-shell">
@@ -278,10 +313,10 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
               <span>{t.backToLogin}</span>
             </button>
           ) : (
-            <div className="auth-segments" aria-label={locale === 'vi' ? 'Chọn hình thức truy cập' : 'Choose access mode'}>
+            capabilities.passwordRegistrationEnabled ? <div className="auth-segments" aria-label={locale === 'vi' ? 'Chọn hình thức truy cập' : 'Choose access mode'}>
               <button type="button" className={mode === 'login' ? 'selected' : ''} onClick={() => selectMode('login')}>{t.login}</button>
               <button type="button" className={mode === 'register' ? 'selected' : ''} onClick={() => selectMode('register')}>{t.register}</button>
-            </div>
+            </div> : null
           )}
 
           <div className="auth-heading">
@@ -356,6 +391,9 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
                 </div>
               </label>
             )}
+            {mode === 'login' && capabilities.passwordResetEnabled && (
+              <button className="auth-forgot" type="button" onClick={() => selectMode('forgot')}>{t.forgotPassword}</button>
+            )}
             <button className="auth-submit" type="submit" disabled={busy} aria-busy={busy}>
               <span>
                 {busy
@@ -366,15 +404,15 @@ export function AuthScreen({ locale, notice, onLocaleChange, onAuthenticated }: 
             </button>
           </form>
 
-          {mode !== 'forgot' && (
+          {mode !== 'forgot' && alternativeAccessEnabled && (
             <>
               <div className="auth-divider"><span>{locale === 'vi' ? 'hoặc' : 'or'}</span></div>
-              {googleClientId && <div className="google-signin" ref={googleButtonRef} aria-label={locale === 'vi' ? 'Đăng nhập với Google' : 'Sign in with Google'} />}
-              <button className="auth-demo" type="button" disabled={busy} onClick={() => void enterDemo()}>
+              {googleSignInEnabled && <div className="google-signin" ref={googleButtonRef} aria-label={locale === 'vi' ? 'Đăng nhập với Google' : 'Sign in with Google'} />}
+              {capabilities.demoAccessEnabled && <button className="auth-demo" type="button" disabled={busy} onClick={() => void enterDemo()}>
                 <Sparkles size={17} />
                 <span>{t.demo}</span>
-              </button>
-              <p className="auth-demo-note">{t.demoNote}</p>
+              </button>}
+              {capabilities.demoAccessEnabled && <p className="auth-demo-note">{t.demoNote}</p>}
             </>
           )}
 

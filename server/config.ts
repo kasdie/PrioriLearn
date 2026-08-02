@@ -29,6 +29,8 @@ export type AppConfig = {
   maintenanceSecret?: string
   maintenancePreviousSecret?: string
   googleClientId?: string
+  demoAccessEnabled: boolean
+  passwordRegistrationEnabled: boolean
   resendApiKey?: string
   emailFrom?: string
   webPushPublicKey?: string
@@ -59,6 +61,13 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     : process.env.NODE_ENV === 'production'
   const extractionWorkerIntervalMs = Number(process.env.EXTRACTION_WORKER_INTERVAL_MS ?? 3_000)
   const extractionWorkerBatchSize = Number(process.env.EXTRACTION_WORKER_BATCH_SIZE ?? 2)
+  const emailConfigured = Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM)
+  const demoAccessEnabled = process.env.ENABLE_DEMO_ACCESS
+    ? process.env.ENABLE_DEMO_ACCESS === 'true'
+    : process.env.NODE_ENV !== 'production'
+  const passwordRegistrationEnabled = process.env.ENABLE_PASSWORD_REGISTRATION
+    ? process.env.ENABLE_PASSWORD_REGISTRATION === 'true' && (process.env.NODE_ENV !== 'production' || emailConfigured)
+    : process.env.NODE_ENV !== 'production' || emailConfigured
   const webPushValues = [
     process.env.WEB_PUSH_PUBLIC_KEY,
     process.env.WEB_PUSH_PRIVATE_KEY,
@@ -90,6 +99,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maintenanceSecret: process.env.MAINTENANCE_SECRET || undefined,
     maintenancePreviousSecret: process.env.MAINTENANCE_SECRET_PREVIOUS || undefined,
     googleClientId: process.env.GOOGLE_CLIENT_ID || undefined,
+    demoAccessEnabled,
+    passwordRegistrationEnabled,
     resendApiKey: process.env.RESEND_API_KEY || undefined,
     emailFrom: process.env.EMAIL_FROM || undefined,
     webPushPublicKey: process.env.WEB_PUSH_PUBLIC_KEY || undefined,

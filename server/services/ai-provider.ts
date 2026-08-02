@@ -17,6 +17,7 @@ export type DocumentInput = {
   filename: string
   mimeType: string
   content: Buffer
+  locale?: Locale
 }
 
 type CoachingInput = {
@@ -56,27 +57,30 @@ export interface AiProvider {
 export class MockAiProvider implements AiProvider {
   readonly name = 'deterministic-demo'
 
-  async extractDocument(_input: DocumentInput): Promise<DocumentExtraction> {
+  async extractDocument(input: DocumentInput): Promise<DocumentExtraction> {
     const dueAt = new Date(Date.now() + 6 * 24 * 3_600_000).toISOString()
+    const vietnamese = input.locale === 'vi'
     return {
       courses: [{
         code: 'CS304',
-        name: 'Programming',
+        name: vietnamese ? 'Lập trình' : 'Programming',
         currentScore: 54,
         targetScore: 78,
         confidence: 0.96,
-        evidence: ['Course header and grade summary'],
+        evidence: [vietnamese ? 'Tiêu đề môn học và phần tổng kết điểm' : 'Course header and grade summary'],
       }],
       tasks: [{
         courseCode: 'CS304',
-        title: 'Assignment 4: Service integration',
+        title: vietnamese ? 'Bài tập 4: Tích hợp dịch vụ' : 'Assignment 4: Service integration',
         dueAt,
         gradeWeight: 20,
         estimatedMinutes: 60,
         confidence: 0.93,
-        evidence: ['Assessment table: Assignment 4, 20%'],
+        evidence: [vietnamese ? 'Bảng đánh giá: Bài tập 4, 20%' : 'Assessment table: Assignment 4, 20%'],
       }],
-      warnings: ['Demo extraction was used because OPENAI_API_KEY is not configured.'],
+      warnings: [vietnamese
+        ? 'Đang dùng dữ liệu trích xuất mẫu vì OPENAI_API_KEY chưa được cấu hình.'
+        : 'Demo extraction was used because OPENAI_API_KEY is not configured.'],
     }
   }
 
@@ -207,11 +211,13 @@ export class OpenAiProvider implements AiProvider {
 }
 
 export function buildDocumentExtractionContent(input: DocumentInput) {
+  const responseLanguage = input.locale === 'vi' ? 'Vietnamese' : 'English'
   const instructions = [
     'Extract courses and assessable tasks from this student document.',
     'Use ISO-8601 timestamps when a deadline is explicit; otherwise return null.',
     'Do not invent grades, deadlines, or weights. Put ambiguity in warnings.',
     'Evidence must be a short source-grounded phrase, not hidden reasoning.',
+    `Write warnings and evidence entirely in ${responseLanguage}, except for names or titles copied from the source.`,
   ].join(' ')
   const isPdf = input.mimeType === 'application/pdf' || input.filename.toLowerCase().endsWith('.pdf')
   const isImage = input.mimeType === 'image/png' || input.mimeType === 'image/jpeg'

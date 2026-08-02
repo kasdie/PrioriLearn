@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import * as webPush from 'web-push'
+import webPush from 'web-push'
 import { DisabledWebPushSender, VapidWebPushSender, createWebPushSender } from './web-push.js'
 
 describe('web push sender configuration', () => {

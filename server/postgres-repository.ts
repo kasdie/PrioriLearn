@@ -443,6 +443,20 @@ export class PostgresRepository implements Repository {
     })
   }
 
+  async getTenantDefaultLocale(tenantId: string): Promise<User['locale'] | undefined> {
+    return this.withTenant(tenantId, async (client) => {
+      const row = await this.oneOrUndefined(
+        client,
+        `SELECT locale FROM users
+         WHERE tenant_id = $1 AND deleted_at IS NULL
+         ORDER BY created_at, id
+         LIMIT 1`,
+        [tenantId],
+      )
+      return row?.locale === 'en' ? 'en' : row?.locale === 'vi' ? 'vi' : undefined
+    })
+  }
+
   async updateUserLocale(tenantId: string, userId: string, locale: User['locale']): Promise<User | undefined> {
     return this.withTenant(tenantId, async (client) => {
       const row = await this.oneOrUndefined(
@@ -1876,6 +1890,24 @@ export class PostgresRepository implements Repository {
     })
   }
 
+  async getDeletionReceipt(tenantId: string, receiptId: string): Promise<AccountDeletionReceipt | undefined> {
+    return this.withTenant(tenantId, async (client) => {
+      const row = await this.oneOrUndefined(
+        client,
+        'SELECT * FROM deletion_receipts WHERE id = $1 AND tenant_id = $2',
+        [receiptId, tenantId],
+      )
+      if (!row) return undefined
+      return {
+        id: String(row.id),
+        tenantId: String(row.tenant_id),
+        status: row.status as AccountDeletionReceipt['status'],
+        createdAt: iso(row.created_at),
+        completedAt: row.completed_at ? iso(row.completed_at) : undefined,
+      }
+    })
+  }
+
   async saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt'>): Promise<ProductEvent> {
     return this.withTenant(event.tenantId, async (client) => {
       const result = await client.query<Row>('INSERT INTO product_events (tenant_id, user_id, name, properties) VALUES ($1, $2, $3, $4) RETURNING *', [event.tenantId, event.userId, event.name, JSON.stringify(event.properties)])
@@ -1888,7 +1920,33 @@ export class PostgresRepository implements Repository {
   async getMetrics(tenantId: string): Promise<Record<string, number>> {
     return this.withTenant(tenantId, async (client) => {
       const result = await client.query<Row>('SELECT name, COUNT(*)::int AS count FROM product_events WHERE tenant_id = $1 GROUP BY name', [tenantId])
-      return Object.fromEntries(result.rows.map((row) => [String(row.name), Number(row.count)]))
+      const metrics = Object.fromEntries(result.rows.map((row) => [String(row.name), Number(row.count)])) as Record<string, number>
+      const activity = await this.oneOrUndefined(
+        client,
+        `SELECT
+           COUNT(DISTINCT product_event.created_at::date)::int AS active_days,
+           COALESCE(BOOL_OR(
+             product_event.created_at >= account.created_at + interval '7 days'
+             AND product_event.created_at < account.created_at + interval '8 days'
+           ), false) AS d7_retained
+         FROM product_events product_event
+         CROSS JOIN (
+           SELECT MIN(created_at) AS created_at
+           FROM users
+           WHERE tenant_id = $1 AND deleted_at IS NULL
+         ) account
+         WHERE product_event.tenant_id = $1 AND product_event.name = 'workspace_opened'`,
+        [tenantId],
+      )
+      metrics.active_days = Number(activity?.active_days ?? 0)
+      metrics.d7_retained = activity?.d7_retained === true ? 1 : 0
+      metrics.plan_acceptance_rate = metrics.plan_generated
+        ? (metrics.plan_approved ?? 0) / metrics.plan_generated
+        : 0
+      metrics.plan_edit_rate = metrics.plan_generated
+        ? (metrics.plan_edited ?? 0) / metrics.plan_generated
+        : 0
+      return metrics
     })
   }
 

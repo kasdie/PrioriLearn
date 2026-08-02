@@ -2,11 +2,12 @@ import { expect, test } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 
 test('private student completes multi-file review, weekly planning, approval, and reload', async ({ page }) => {
+  const email = `student-${Date.now()}@example.test`
   await page.goto('/')
   await page.getByRole('button', { name: 'EN', exact: true }).click()
   await page.getByRole('button', { name: 'Create account' }).click()
   await page.getByLabel('Your name').fill('E2E Student')
-  await page.getByLabel('Email').fill(`student-${Date.now()}@example.test`)
+  await page.getByLabel('Email').fill(email)
   await page.locator('input[type="password"]').fill('private-e2e-password')
   await page.getByRole('button', { name: 'Create account' }).last().click()
 
@@ -62,12 +63,17 @@ test('private student completes multi-file review, weekly planning, approval, an
   await page.reload()
   await expect(page.getByText('Approved').first()).toBeVisible()
 
+  await page.route('**/api/push-subscriptions/status', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ configured: false, subscriptionCount: 0, consentGranted: false }),
+  }))
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Privacy and data' })).toBeVisible()
   await expect(page.getByLabel('Email digest')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Device reminders' })).toBeVisible()
   await expect(page.getByLabel('Notifications on this browser')).toBeDisabled()
-  await page.getByLabel('Aggregate research').check()
+  await page.getByLabel('Aggregate research').click()
   await expect(page.getByLabel('Aggregate research')).toBeChecked()
   await page.getByRole('button', { name: 'Add signal' }).click()
   await page.getByLabel('Focus length value').fill('25 minutes')
@@ -75,6 +81,11 @@ test('private student completes multi-file review, weekly planning, approval, an
   await expect(page.getByText('Learner profile saved. Coach only uses it when you request a proposal.')).toBeVisible()
   await expect(page.getByLabel('Focus length value')).toHaveValue('25 minutes')
   await expect(page.getByRole('button', { name: 'Download export' })).toBeVisible()
+  await page.getByLabel(`Enter ${email} to confirm`).fill(email)
+  await page.getByRole('button', { name: 'Start account deletion' }).click()
+  await expect(page.getByRole('heading', { name: 'Deletion in progress' })).toBeVisible()
+  await expect(page.getByText('Receipt ID')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Return to sign in' })).toBeVisible()
 })
 
 test('desktop workspace keeps controls named, traps dialog focus, and passes WCAG checks', async ({ page }) => {

@@ -30,7 +30,9 @@ import {
   WebPushSubscriptionInputSchema,
   type ConsentAudit,
   type AuthActionPurpose,
+  type CoachMode,
   type ImportDraft,
+  type Locale,
   type ReplanProposal,
   type SourceDocument,
 } from './domain/contracts.js'
@@ -183,6 +185,22 @@ function publicUser(user: AuthContext['user']) {
   return { ...safeUser, emailVerified: Boolean(emailVerifiedAt) }
 }
 
+function localizedCoachMode(mode: CoachMode, locale: Locale): string {
+  const labels: Record<Locale, Record<CoachMode, string>> = {
+    vi: {
+      gentle: 'nhẹ nhàng',
+      focus: 'tập trung',
+      discipline: 'kỷ luật',
+    },
+    en: {
+      gentle: 'gentle',
+      focus: 'focused',
+      discipline: 'disciplined',
+    },
+  }
+  return labels[locale][mode]
+}
+
 function publicLearnerProfile(profile: Awaited<ReturnType<Repository['getLearnerProfile']>>) {
   return profile
     ? {
@@ -319,6 +337,18 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   const emailSender = options.emailSender ?? createEmailSender(config)
   const webPushSender = options.webPushSender ?? createWebPushSender(config)
   const errorReporter = options.errorReporter ?? createErrorReporter(config)
+  const recordProductEvent = async (
+    tenantId: string,
+    userId: string,
+    name: string,
+    properties: Record<string, unknown> = {},
+  ): Promise<void> => {
+    try {
+      await repository.saveEvent({ tenantId, userId, name, properties })
+    } catch (error) {
+      errorReporter.captureException(error, { source: 'product_event', code: name })
+    }
+  }
   const processExtractionQueue = () => processExtractionJobs({
     repository,
     objectStore,
@@ -393,6 +423,13 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     message: 'Too many AI requests. Wait before trying again.',
     key: (_request, response) => `ai:${(response.locals.auth as AuthContext | undefined)?.user.id ?? 'anonymous'}`,
   })
+  const deletionReceiptRateLimit = createRateLimit({
+    maxAttempts: 60,
+    windowMs: 60_000,
+    code: 'DELETION_RECEIPT_RATE_LIMITED',
+    message: 'Too many deletion receipt checks. Wait before trying again.',
+    key: (request) => `deletion-receipt:${request.ip ?? request.socket.remoteAddress ?? 'unknown'}`,
+  })
 
   const uploadDocument = multer({
     storage: multer.memoryStorage(),
@@ -448,6 +485,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     })
   })
 
+  app.get('/api/auth/capabilities', (_request, response) => {
+    response.json({
+      passwordLoginEnabled: true,
+      passwordRegistrationEnabled: config.passwordRegistrationEnabled,
+      passwordResetEnabled: emailSender.configured,
+      googleSignInConfigured: Boolean(config.googleClientId),
+      demoAccessEnabled: config.demoAccessEnabled,
+    })
+  })
+
   const createAndSendAuthAction = async (user: AuthContext['user'], purpose: AuthActionPurpose): Promise<void> => {
     if (!emailSender.configured) {
       throw new ApiError(503, 'EMAIL_DELIVERY_NOT_CONFIGURED', 'Email delivery is not configured for this environment.')
@@ -472,11 +519,15 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }
 
   app.post('/api/auth/register', authRateLimit, asyncRoute(async (request, response) => {
+    if (!config.passwordRegistrationEnabled) {
+      throw new ApiError(503, 'PASSWORD_REGISTRATION_DISABLED', 'Create a new account with Google Sign-In in this environment.')
+    }
     const input = parseBody(RegisterInputSchema, request.body)
     try {
       const user = await repository.createPersonalAccount(input)
       const token = await repository.createSession(user)
       issueSessionCookie(response, config, token)
+      await recordProductEvent(user.tenantId, user.id, 'onboarding_completed', { method: 'password' })
       response.status(201).json({ user: publicUser(user), tenant: await repository.getTenant(user.tenantId) })
     } catch (error) {
       if (error instanceof Error && error.message === 'EMAIL_EXISTS') {
@@ -517,18 +568,29 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     }
 
     let user = await repository.findUserByGoogleSubject(identity.subject)
+    let createdAccount = false
     if (!user) {
       const matchingEmail = await repository.findUserByEmail(identity.email)
+      if (matchingEmail && !matchingEmail.emailVerifiedAt) {
+        throw new ApiError(
+          409,
+          'GOOGLE_EMAIL_LINK_REQUIRES_VERIFICATION',
+          'This email belongs to an unverified password account and cannot be linked automatically.',
+        )
+      }
       try {
-        user = matchingEmail
-          ? await repository.linkGoogleSubject(matchingEmail.tenantId, matchingEmail.id, identity.subject)
-          : await repository.createPersonalAccount({
+        if (matchingEmail) {
+          user = await repository.linkGoogleSubject(matchingEmail.tenantId, matchingEmail.id, identity.subject)
+        } else {
+          user = await repository.createPersonalAccount({
             email: identity.email,
             name: identity.name,
             locale: input.locale,
             googleSubject: identity.subject,
             password: randomBytes(48).toString('base64url'),
           })
+          createdAccount = true
+        }
       } catch (error) {
         if (error instanceof Error && (error.message === 'GOOGLE_SUBJECT_EXISTS' || error.message === 'EMAIL_EXISTS')) {
           throw new ApiError(409, 'GOOGLE_ACCOUNT_CONFLICT', 'This Google account is already linked to another PrioriLearn account.')
@@ -543,10 +605,16 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
 
     const token = await repository.createSession(user)
     issueSessionCookie(response, config, token)
+    if (createdAccount) {
+      await recordProductEvent(user.tenantId, user.id, 'onboarding_completed', { method: 'google' })
+    }
     response.json({ user: publicUser(user), tenant: await repository.getTenant(user.tenantId) })
   }))
 
   app.post('/api/auth/demo', authRateLimit, asyncRoute(async (_request, response) => {
+    if (!config.demoAccessEnabled) {
+      throw new ApiError(404, 'DEMO_ACCESS_DISABLED', 'The shared demo workspace is disabled in this environment.')
+    }
     const user = await repository.getDemoUser()
     const token = await repository.createSession(user)
     issueSessionCookie(response, config, token)
@@ -659,6 +727,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       .sort((left, right) => right.assessment.score - left.assessment.score)
 
     const rankedWindow = ranked.slice(0, 10)
+    await recordProductEvent(tenant.id, user.id, 'workspace_opened', { surface: 'dashboard' })
     response.json({
       rankedTasks: rankedWindow,
       confirmedTaskCount: ranked.length,
@@ -806,7 +875,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }))
 
   app.post('/api/documents/:documentId/confirm', requireAuth, asyncRoute(async (request, response) => {
-    const { tenant } = getAuth(response)
+    const { user, tenant } = getAuth(response)
     const document = await repository.getDocument(tenant.id, routeParam(request.params.documentId))
     if (!document) throw new ApiError(404, 'DOCUMENT_NOT_FOUND', 'Document was not found.')
     if (document.status !== 'confirmed' && (document.status !== 'review' || !document.extraction)) {
@@ -815,7 +884,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const submitted = parseBody(z.object({ extraction: DocumentExtractionSchema.optional() }), request.body ?? {})
     const reviewExtraction = submitted.extraction ?? document.extraction
     if (!reviewExtraction) throw new ApiError(409, 'EXTRACTION_NOT_READY', 'Extract and review this document before confirming it.')
-    const extraction = validateExtractionDates(reviewExtraction)
+    const extraction = validateExtractionDates(reviewExtraction, user.locale)
     response.json(await repository.confirmDocumentImport(tenant.id, document.id, extraction))
   }))
 
@@ -972,17 +1041,26 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
         locale: input.locale ?? user.locale,
       })
     if (items.length === 0) throw new ApiError(409, 'NO_SCHEDULABLE_TASKS', 'No confirmed tasks fit the available time.')
+    const locale = input.locale ?? user.locale
+    const coachMode = planningPreferences?.coachMode ?? input.coachMode
     const proposalInput = {
       items,
       schedulingWarnings: weeklyResult?.schedulingWarnings ?? [],
-      rationale: input.locale === 'vi' || (!input.locale && user.locale === 'vi')
-        ? `Kế hoạch ${planningPreferences?.coachMode ?? input.coachMode} được xếp theo tác động học tập, rủi ro, chi phí trì hoãn, mục tiêu và khả năng bắt đầu.`
-        : `A ${planningPreferences?.coachMode ?? input.coachMode} plan ranked by academic impact, failure risk, cost of delay, goal alignment, and actionability.`,
+      rationale: locale === 'vi'
+        ? `Kế hoạch ${localizedCoachMode(coachMode, locale)} được xếp theo tác động học tập, rủi ro, chi phí trì hoãn, mục tiêu và khả năng bắt đầu.`
+        : `A ${localizedCoachMode(coachMode, locale)} plan ranked by academic impact, failure risk, cost of delay, goal alignment, and actionability.`,
       previousPlanId: current.active?.id,
     }
     const plan = current.pending
       ? await repository.replacePlanProposal(tenant.id, current.pending.id, current.pending.version, proposalInput)
       : await repository.createPlanProposal(tenant.id, proposalInput)
+    await recordProductEvent(tenant.id, user.id, 'plan_generated', {
+      planId: plan.id,
+      version: plan.version,
+      coachMode,
+      itemCount: plan.items.length,
+      replacedPending: Boolean(current.pending),
+    })
     response.status(201).json({ plan, requiresApproval: true })
   }))
 
@@ -1024,6 +1102,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
           : 'Student-edited proposal with schedule and order validation.',
       },
     )
+    await recordProductEvent(tenant.id, user.id, 'plan_edited', {
+      planId: plan.id,
+      version: plan.version,
+      itemCount: plan.items.length,
+    })
     response.status(201).json({ plan, requiresApproval: true })
   }))
 
@@ -1061,6 +1144,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       input.expectedVersion,
       randomBytes(18).toString('base64url'),
     )
+    await recordProductEvent(tenant.id, user.id, 'plan_approved', {
+      planId: approved.id,
+      version: approved.version,
+      itemCount: approved.items.length,
+    })
     response.json({ plan: approved })
   }))
 
@@ -1142,6 +1230,11 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       randomBytes(18).toString('base64url'),
     )
     await repository.saveReplanProposal({ ...proposal, status: 'approved', approvedPlanId: approvedPlan.id })
+    await recordProductEvent(tenant.id, user.id, 'replan_approved', {
+      proposalId: proposal.id,
+      planId: approvedPlan.id,
+      version: approvedPlan.version,
+    })
     response.json({ plan: approvedPlan })
   }))
 
@@ -1173,8 +1266,12 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     }
     await repository.saveConsent(consent)
     if (input.purpose === 'email_digest') {
-      if (input.granted) await repository.scheduleDailyDigest(tenant.id, user.id, nextDailyDigestRun())
-      else await repository.cancelDailyDigestJobs(tenant.id, user.id)
+      if (input.granted) {
+        const preferences = await repository.getPlanningPreferences(tenant.id, user.id)
+        await repository.scheduleDailyDigest(tenant.id, user.id, nextDailyDigestRun(new Date(), preferences))
+      } else {
+        await repository.cancelDailyDigestJobs(tenant.id, user.id)
+      }
     }
     response.status(201).json({ consent })
   }))
@@ -1219,7 +1316,8 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       auth: input.keys.auth,
       expiresAt: input.expirationTime ? new Date(input.expirationTime).toISOString() : undefined,
     })
-    await repository.scheduleDailyDigest(tenant.id, user.id, nextDailyDigestRun(), 'web_push')
+    const preferences = await repository.getPlanningPreferences(tenant.id, user.id)
+    await repository.scheduleDailyDigest(tenant.id, user.id, nextDailyDigestRun(new Date(), preferences), 'web_push')
     const consent: ConsentAudit = {
       id: randomUUID(),
       tenantId: tenant.id,
@@ -1294,7 +1392,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   app.post('/api/events', requireAuth, asyncRoute(async (request, response) => {
     const { user, tenant } = getAuth(response)
     const input = parseBody(z.object({
-      name: z.enum(['onboarding_completed', 'plan_generated', 'plan_approved', 'focus_started', 'focus_completed', 'replan_approved', 'top_task_completed']),
+      name: z.enum(['workspace_opened', 'onboarding_completed', 'plan_generated', 'plan_edited', 'plan_approved', 'focus_started', 'focus_completed', 'replan_approved', 'top_task_completed']),
       properties: z.record(z.string(), z.unknown()).default({}),
     }), request.body)
     const event = await repository.saveEvent({ tenantId: tenant.id, userId: user.id, ...input })
@@ -1333,6 +1431,22 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       consents,
       learnerProfile: publicLearnerProfile(learnerProfile),
       planningPreferences: planningPreferences ?? null,
+    })
+  }))
+
+  app.get('/api/account/deletion-receipts/:receiptId', deletionReceiptRateLimit, asyncRoute(async (request, response) => {
+    const receiptId = parseBody(z.uuid(), routeParam(request.params.receiptId))
+    const { tenantId } = parseBody(z.object({ tenantId: z.uuid() }), request.query)
+    const receipt = await repository.getDeletionReceipt(tenantId, receiptId)
+    if (!receipt) throw new ApiError(404, 'DELETION_RECEIPT_NOT_FOUND', 'This deletion receipt was not found.')
+    response.json({
+      receipt: {
+        id: receipt.id,
+        tenantId: receipt.tenantId,
+        status: receipt.status,
+        createdAt: receipt.createdAt,
+        completedAt: receipt.completedAt,
+      },
     })
   }))
 

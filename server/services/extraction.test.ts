@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { InMemoryRepository } from '../repository.js'
 import { MemoryObjectStore } from '../storage.js'
 import type { AiProvider } from './ai-provider.js'
@@ -36,19 +36,25 @@ describe('extraction worker', () => {
     const setup = await queuedDocument()
     const duplicate = setup.repository.enqueueDocumentExtraction(setup.user.tenantId, setup.document.id)
     expect(duplicate.job.id).toBe(setup.queued.job.id)
+    const provider = new MockAiProvider()
+    const extractDocument = vi.spyOn(provider, 'extractDocument')
 
     const result = await processExtractionJobs({
       repository: setup.repository,
       objectStore: setup.objectStore,
-      aiProvider: new MockAiProvider(),
+      aiProvider: provider,
       now: new Date(Date.now() + 60_000),
     })
 
     expect(result).toEqual({ claimed: 1, completed: 1, retried: 0, failed: 0 })
+    expect(extractDocument).toHaveBeenCalledWith(expect.objectContaining({ locale: 'vi' }))
     expect(setup.repository.getDocument(setup.user.tenantId, setup.document.id)).toMatchObject({
       status: 'review',
       extractionProvider: 'deterministic-demo',
-      extraction: { tasks: [expect.objectContaining({ title: expect.any(String) })] },
+      extraction: {
+        tasks: [expect.objectContaining({ title: expect.any(String) })],
+        warnings: [expect.stringContaining('OPENAI_API_KEY')],
+      },
     })
   })
 

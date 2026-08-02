@@ -124,6 +124,7 @@ export type ApiLearnerProfile = {
 
 export type ApiAccountDeletionReceipt = {
   id: string
+  tenantId: string
   status: 'pending' | 'completed' | 'failed'
   createdAt: string
   completedAt?: string
@@ -166,6 +167,14 @@ export type ApiTenant = {
 export type ApiSession = {
   user: ApiUser
   tenant: ApiTenant
+}
+
+export type ApiAuthCapabilities = {
+  passwordLoginEnabled: boolean
+  passwordRegistrationEnabled: boolean
+  passwordResetEnabled: boolean
+  googleSignInConfigured: boolean
+  demoAccessEnabled: boolean
 }
 
 export type DocumentExtraction = {
@@ -333,6 +342,10 @@ async function waitForDocumentExtraction(initial: ApiSourceDocument): Promise<{ 
 }
 
 export const prioriApi = {
+  authCapabilities(): Promise<ApiAuthCapabilities> {
+    return apiFetch('/auth/capabilities')
+  },
+
   async bootstrap(): Promise<ApiSession | null> {
     await parseResponse(await fetch(apiUrl('/health'), { credentials: 'include' }))
     const { session } = await apiFetch<{ session: ApiSession | null }>('/auth/session')
@@ -469,6 +482,13 @@ export const prioriApi = {
       method: 'DELETE',
       body: JSON.stringify({ confirmation }),
     })
+    return response.receipt
+  },
+
+  async deletionReceipt(tenantId: string, receiptId: string): Promise<ApiAccountDeletionReceipt> {
+    const response = await apiFetch<{ receipt: ApiAccountDeletionReceipt }>(
+      `/account/deletion-receipts/${encodeURIComponent(receiptId)}?tenantId=${encodeURIComponent(tenantId)}`,
+    )
     return response.receipt
   },
 
@@ -658,7 +678,7 @@ export const prioriApi = {
   },
 
   track(
-    name: 'onboarding_completed' | 'plan_generated' | 'plan_approved' | 'focus_started' | 'focus_completed' | 'replan_approved' | 'top_task_completed',
+    name: 'workspace_opened' | 'onboarding_completed' | 'plan_generated' | 'plan_edited' | 'plan_approved' | 'focus_started' | 'focus_completed' | 'replan_approved' | 'top_task_completed',
     properties: Record<string, unknown> = {},
   ): Promise<unknown> {
     return apiFetch('/events', { method: 'POST', body: JSON.stringify({ name, properties }) })

@@ -2,6 +2,7 @@ import { parse } from 'csv-parse/sync'
 import {
   DocumentExtractionSchema,
   type DocumentExtraction,
+  type Locale,
 } from '../domain/contracts.js'
 
 type StructuredFormat = 'csv' | 'json' | 'jsonl'
@@ -27,6 +28,7 @@ type CourseDraft = DocumentExtraction['courses'][number]
 type TaskDraft = DocumentExtraction['tasks'][number]
 
 type BuildState = {
+  locale: Locale
   courses: Map<string, CourseDraft>
   tasks: TaskDraft[]
   warnings: Set<string>
@@ -221,16 +223,17 @@ function parseGenericCourse(value: string): { code?: string; name?: string } {
   return { name: value }
 }
 
-function evidenceFor(index: IndexedRecord, source: string): string[] {
+function evidenceFor(index: IndexedRecord, source: string, locale: Locale): string[] {
   const columns = [...index.values()]
     .filter((entry) => toText(entry.value) !== undefined)
     .map((entry) => entry.key)
     .slice(0, 8)
-  return [`${source}: ${columns.length > 0 ? columns.join(', ') : 'structured record'}`]
+  return [`${source}: ${columns.length > 0 ? columns.join(', ') : locale === 'vi' ? 'bản ghi có cấu trúc' : 'structured record'}`]
 }
 
-function createState(): BuildState {
+function createState(locale: Locale): BuildState {
   return {
+    locale,
     courses: new Map(),
     tasks: [],
     warnings: new Set(),
@@ -307,7 +310,7 @@ function addCourseRecord(record: UnknownRecord, source: string, state: BuildStat
     currentScore: boundedNumber(read(index, currentScoreAliases)?.value, 0, 100, state),
     targetScore: boundedNumber(read(index, targetScoreAliases)?.value, 0, 100, state),
     confidence: identity.derived ? 0.78 : 0.96,
-    evidence: evidenceFor(index, source),
+    evidence: evidenceFor(index, source, state.locale),
   })
   return identity
 }
@@ -367,7 +370,7 @@ function addTaskRecord(
   }
 
   if (!identity.code) {
-    identity = { code: 'GENERAL', name: 'General', derived: true }
+    identity = { code: 'GENERAL', name: state.locale === 'vi' ? 'Chung' : 'General', derived: true }
     state.derivedCourseCodes += 1
   }
   const courseCode = identity.code ?? 'GENERAL'
@@ -378,7 +381,7 @@ function addTaskRecord(
     currentScore: boundedNumber(read(index, currentScoreAliases)?.value, 0, 100, state),
     targetScore: boundedNumber(read(index, targetScoreAliases)?.value, 0, 100, state),
     confidence: identity.derived ? 0.72 : 0.94,
-    evidence: evidenceFor(index, source),
+    evidence: evidenceFor(index, source, state.locale),
   })
 
   const estimateValue = read(index, minutesAliases)?.value
@@ -398,7 +401,7 @@ function addTaskRecord(
     gradeWeight: boundedNumber(read(index, weightAliases)?.value, 0, 100, state),
     estimatedMinutes,
     confidence: identity.derived ? 0.74 : 0.95,
-    evidence: evidenceFor(index, source),
+    evidence: evidenceFor(index, source, state.locale),
   })
 }
 
@@ -406,16 +409,24 @@ function finish(state: BuildState, provider: StructuredImportResult['provider'])
   if (state.courses.size === 0 && state.tasks.length === 0) return null
 
   if (state.defaultedMinutes > 0) {
-    state.warnings.add(`${state.defaultedMinutes} task(s) had no valid duration; 45 minutes was proposed for review.`)
+    state.warnings.add(state.locale === 'vi'
+      ? `${state.defaultedMinutes} nhiệm vụ chưa có thời lượng hợp lệ; hệ thống đề xuất 45 phút để bạn xem lại.`
+      : `${state.defaultedMinutes} task(s) had no valid duration; 45 minutes was proposed for review.`)
   }
   if (state.derivedCourseCodes > 0) {
-    state.warnings.add(`${state.derivedCourseCodes} course reference(s) needed a generated code; review the highlighted course fields.`)
+    state.warnings.add(state.locale === 'vi'
+      ? `${state.derivedCourseCodes} môn học cần mã được tạo tạm; hãy xem lại các trường môn học được đánh dấu.`
+      : `${state.derivedCourseCodes} course reference(s) needed a generated code; review the highlighted course fields.`)
   }
   if (state.invalidDeadlines > 0) {
-    state.warnings.add(`${state.invalidDeadlines} deadline value(s) could not be parsed and were left unknown.`)
+    state.warnings.add(state.locale === 'vi'
+      ? `${state.invalidDeadlines} giá trị thời hạn không thể đọc và đã được để ở trạng thái chưa xác định.`
+      : `${state.invalidDeadlines} deadline value(s) could not be parsed and were left unknown.`)
   }
   if (state.invalidNumbers > 0) {
-    state.warnings.add(`${state.invalidNumbers} score or weight value(s) were outside the supported range and were left unknown.`)
+    state.warnings.add(state.locale === 'vi'
+      ? `${state.invalidNumbers} giá trị điểm hoặc trọng số nằm ngoài phạm vi hỗ trợ và đã được để ở trạng thái chưa xác định.`
+      : `${state.invalidNumbers} score or weight value(s) were outside the supported range and were left unknown.`)
   }
 
   return {
@@ -428,7 +439,7 @@ function finish(state: BuildState, provider: StructuredImportResult['provider'])
   }
 }
 
-function extractCsv(content: Buffer): StructuredImportResult | null {
+function extractCsv(content: Buffer, locale: Locale): StructuredImportResult | null {
   let rows: unknown
   try {
     rows = parse(content.toString('utf8'), {
@@ -442,25 +453,27 @@ function extractCsv(content: Buffer): StructuredImportResult | null {
   } catch {
     throw new StructuredImportError(
       'INVALID_CSV',
-      'The CSV file could not be read. Check that it has one header row and a consistent delimiter.',
+      locale === 'vi'
+        ? 'Không thể đọc tệp CSV. Hãy kiểm tra tệp có một hàng tiêu đề và dấu phân cách nhất quán.'
+        : 'The CSV file could not be read. Check that it has one header row and a consistent delimiter.',
     )
   }
 
   if (!Array.isArray(rows)) return null
-  const state = createState()
+  const state = createState(locale)
   rows.forEach((row, index) => {
-    if (isRecord(row)) addTaskRecord(row, `CSV row ${index + 2}`, state)
+    if (isRecord(row)) addTaskRecord(row, locale === 'vi' ? `Dòng CSV ${index + 2}` : `CSV row ${index + 2}`, state)
   })
   return finish(state, 'structured-csv')
 }
 
 function addNestedCourse(record: UnknownRecord, index: number, state: BuildState): void {
-  const source = `JSON course ${index + 1}`
+  const source = state.locale === 'vi' ? `Môn học JSON ${index + 1}` : `JSON course ${index + 1}`
   const identity = addCourseRecord(record, source, state)
   const tasks = readArray(record, ['tasks', 'assignments', 'assessments', 'activities', 'deadlines', 'bai_tap'])
   tasks?.forEach((task, taskIndex) => {
     if (isRecord(task)) {
-      addTaskRecord(task, `${source}, task ${taskIndex + 1}`, state, {
+      addTaskRecord(task, state.locale === 'vi' ? `${source}, nhiệm vụ ${taskIndex + 1}` : `${source}, task ${taskIndex + 1}`, state, {
         allowNameAsTitle: true,
         fallbackCourse: identity,
       })
@@ -478,16 +491,16 @@ function tableRows(record: UnknownRecord): UnknownRecord[] | undefined {
     .map((row) => Object.fromEntries(headers.map((header, index) => [header as string, row[index]])))
 }
 
-function extractJsonValue(value: unknown, format: 'json' | 'jsonl'): StructuredImportResult | null {
+function extractJsonValue(value: unknown, format: 'json' | 'jsonl', locale: Locale): StructuredImportResult | null {
   if (format === 'json') {
     const direct = DocumentExtractionSchema.safeParse(value)
     if (direct.success) return { provider: 'structured-json', extraction: direct.data }
   }
 
-  const state = createState()
+  const state = createState(locale)
   if (Array.isArray(value)) {
     value.forEach((record, index) => {
-      if (isRecord(record)) addGenericRecord(record, `JSON row ${index + 1}`, state)
+      if (isRecord(record)) addGenericRecord(record, locale === 'vi' ? `Dòng JSON ${index + 1}` : `JSON row ${index + 1}`, state)
     })
     return finish(state, `structured-${format}`)
   }
@@ -495,7 +508,7 @@ function extractJsonValue(value: unknown, format: 'json' | 'jsonl'): StructuredI
 
   const tabular = tableRows(value)
   if (tabular) {
-    tabular.forEach((record, index) => addGenericRecord(record, `JSON row ${index + 1}`, state))
+    tabular.forEach((record, index) => addGenericRecord(record, locale === 'vi' ? `Dòng JSON ${index + 1}` : `JSON row ${index + 1}`, state))
   }
 
   const courses = readArray(value, ['courses', 'subjects', 'modules', 'classes', 'mon_hoc'])
@@ -505,21 +518,21 @@ function extractJsonValue(value: unknown, format: 'json' | 'jsonl'): StructuredI
 
   const tasks = readArray(value, ['tasks', 'assignments', 'assessments', 'activities', 'deadlines', 'bai_tap'])
   tasks?.forEach((task, index) => {
-    if (isRecord(task)) addTaskRecord(task, `JSON task ${index + 1}`, state, { allowNameAsTitle: true })
+    if (isRecord(task)) addTaskRecord(task, locale === 'vi' ? `Nhiệm vụ JSON ${index + 1}` : `JSON task ${index + 1}`, state, { allowNameAsTitle: true })
   })
 
   const rows = readArray(value, ['data', 'records', 'items'])
   rows?.forEach((row, index) => {
-    if (isRecord(row)) addGenericRecord(row, `JSON row ${index + 1}`, state)
+    if (isRecord(row)) addGenericRecord(row, locale === 'vi' ? `Dòng JSON ${index + 1}` : `JSON row ${index + 1}`, state)
   })
 
   if (!tabular && !courses && !tasks && !rows) {
-    addGenericRecord(value, 'JSON record', state)
+    addGenericRecord(value, locale === 'vi' ? 'Bản ghi JSON' : 'JSON record', state)
   }
   return finish(state, `structured-${format}`)
 }
 
-function extractJson(content: Buffer, format: 'json' | 'jsonl'): StructuredImportResult | null {
+function extractJson(content: Buffer, format: 'json' | 'jsonl', locale: Locale): StructuredImportResult | null {
   const text = content.toString('utf8').replace(/^\uFEFF/, '').trim()
   try {
     if (format === 'jsonl') {
@@ -527,14 +540,16 @@ function extractJson(content: Buffer, format: 'json' | 'jsonl'): StructuredImpor
         .split(/\r?\n/)
         .filter((line) => line.trim())
         .map((line) => JSON.parse(line) as unknown)
-      return extractJsonValue(values, format)
+      return extractJsonValue(values, format, locale)
     }
-    return extractJsonValue(JSON.parse(text) as unknown, format)
+    return extractJsonValue(JSON.parse(text) as unknown, format, locale)
   } catch (error) {
     if (error instanceof StructuredImportError) throw error
     throw new StructuredImportError(
       'INVALID_JSON',
-      `The ${format.toUpperCase()} file could not be read. Check that its structure is valid.`,
+      locale === 'vi'
+        ? `Không thể đọc tệp ${format.toUpperCase()}. Hãy kiểm tra cấu trúc tệp hợp lệ.`
+        : `The ${format.toUpperCase()} file could not be read. Check that its structure is valid.`,
     )
   }
 }
@@ -560,9 +575,11 @@ export function extractStructuredDocument(input: {
   filename: string
   mimeType: string
   content: Buffer
+  locale?: Locale
 }): StructuredImportResult | null {
+  const locale = input.locale ?? 'en'
   const format = detectFormat(input.filename, input.mimeType)
-  if (format === 'csv') return extractCsv(input.content)
-  if (format === 'json' || format === 'jsonl') return extractJson(input.content, format)
+  if (format === 'csv') return extractCsv(input.content, locale)
+  if (format === 'json' || format === 'jsonl') return extractJson(input.content, format, locale)
   return null
 }
