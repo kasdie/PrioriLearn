@@ -14,9 +14,9 @@ Students do not usually procrastinate because they lack a to-do list. They procr
 
 PrioriLearn converts syllabus, tasks, availability, and optional LMS/calendar context into a transparent priority assessment. It shows Cost of Delay, proposes a realistic first block, and adapts when the student gets stuck. Every plan and replacement remains a proposal until the student explicitly approves its current version.
 
-The demo is runnable without a school account or API key. Judges can upload the included syllabus and ICS files; the API labels its deterministic provider in this mode. With an OpenAI key, the same provider contract uses GPT-5.6 file input and structured output. Scoring, scheduling, permissions, tenant isolation, and approval state transitions remain deterministic.
+The local demo mode is runnable without a school account or API key. The production app uses verified Google Sign-In; judges can then upload the included syllabus and ICS files. With an OpenAI key, the provider contract uses GPT-5.6 file input and structured output. Scoring, scheduling, permissions, tenant isolation, and approval state transitions remain deterministic.
 
-The architecture supports personal tenants today and a privacy-safe institution path later. V1 has no institution endpoint for individual progress, inferred risk, plans, or learner profiles. Future cohort output requires separate consent and at least 10 members.
+The architecture supports personal tenants today and a privacy-safe institution path later. V1 has no institution endpoint for individual progress, inferred risk, plans, or learner profiles. Only activity created after research opt-in is eligible for future aggregates; revocation clears prior eligibility, and every cohort must contain at least 10 members.
 
 ## Codex and GPT-5.6 narrative
 
@@ -32,13 +32,19 @@ GPT-5.6 is integrated through the OpenAI Responses API for source-grounded PDF, 
 4. Approve the proposed day, report “Mình đang bị kẹt,” then approve the 20-minute recovery plan.
 5. Close on the provider boundary, tests, privacy model, and read-only Canvas extension.
 
+## Published URLs
+
+- Repository: https://github.com/kasdie/PrioriLearn
+- Production app: https://priori-learn-kasdies-projects.vercel.app
+- API health: https://priorilearn-api.onrender.com/api/health
+
 ## Final checklist
 
 - [x] Local web/API run with no credentials.
-- [x] Lint, 18 automated tests, and production build pass.
+- [x] Lint, 116 unit/API/component tests, 14 PostgreSQL integration tests, 5 browser E2E tests, and the production build pass.
 - [x] README, sample data, product spec, design doc, build plan, and Vietnamese deck are included.
-- [ ] Deploy the web/API to a public URL.
-- [ ] Replace the local URL in `extension/popup.js` with the deployment URL.
+- [x] Deploy the web/API to public URLs.
+- [x] Point `extension/popup.js` at the stable production URL.
 - [ ] Record and publish the video under three minutes.
-- [ ] Add repository/demo/video URLs and required Codex session evidence to Devpost.
-- [ ] Verify repository visibility and final judging access.
+- [ ] Add the video URL and required Codex session evidence to Devpost.
+- [x] Verify repository visibility and final judging access.
