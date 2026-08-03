@@ -53,6 +53,16 @@ export type PlanningPreferencesInput = Pick<
   'locale' | 'coachMode' | 'dailyMinutes' | 'timezone' | 'utcOffsetMinutes' | 'windows'
 >
 
+export type ProductEvent = {
+  id: string
+  tenantId: string
+  userId: string
+  name: string
+  properties: Record<string, unknown>
+  researchEligible: boolean
+  createdAt: string
+}
+
 export class RepositoryError extends Error {
   constructor(
     readonly code:
@@ -168,7 +178,8 @@ export interface Repository {
   failLifecycleJob(job: LifecycleJob, message: string, failedAt?: Date): Awaitable<'retrying' | 'failed'>
   requestAccountDeletion(tenantId: string, userId: string): Awaitable<AccountDeletionReceipt>
   getDeletionReceipt(tenantId: string, receiptId: string): Awaitable<AccountDeletionReceipt | undefined>
-  saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt'>): Awaitable<ProductEvent>
+  saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt' | 'researchEligible'>): Awaitable<ProductEvent>
+  listProductEvents(tenantId: string, userId: string): Awaitable<ProductEvent[]>
   getMetrics(tenantId: string): Awaitable<Record<string, number>>
   deleteTenant(tenantId: string): Awaitable<void>
 }
@@ -179,15 +190,6 @@ type Session = {
   tenantId: string
   createdAt: string
   expiresAt: string
-}
-
-type ProductEvent = {
-  id: string
-  tenantId: string
-  userId: string
-  name: string
-  properties: Record<string, unknown>
-  createdAt: string
 }
 
 const nowIso = () => new Date().toISOString()
@@ -897,6 +899,13 @@ export class InMemoryRepository implements Repository {
 
   saveConsent(consent: ConsentAudit): ConsentAudit {
     this.consents.set(consent.id, consent)
+    if (consent.purpose === 'research_metrics' && !consent.granted) {
+      for (const [eventId, event] of this.events) {
+        if (event.tenantId === consent.tenantId && event.userId === consent.userId && event.researchEligible) {
+          this.events.set(eventId, { ...event, researchEligible: false })
+        }
+      }
+    }
     return consent
   }
 
@@ -1364,10 +1373,25 @@ export class InMemoryRepository implements Repository {
     return receipt?.tenantId === tenantId ? receipt : undefined
   }
 
-  saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt'>): ProductEvent {
-    const saved = { ...event, id: randomUUID(), createdAt: nowIso() }
+  saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt' | 'researchEligible'>): ProductEvent {
+    const latestResearchConsent = [...this.consents.values()]
+      .filter((consent) => consent.tenantId === event.tenantId && consent.userId === event.userId && consent.purpose === 'research_metrics')
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))[0]
+    const saved: ProductEvent = {
+      ...event,
+      id: randomUUID(),
+      researchEligible: latestResearchConsent?.granted ?? false,
+      createdAt: nowIso(),
+    }
     this.events.set(saved.id, saved)
     return saved
+  }
+
+  listProductEvents(tenantId: string, userId: string): ProductEvent[] {
+    return [...this.events.values()]
+      .filter((event) => event.tenantId === tenantId && event.userId === userId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+      .map((event) => ({ ...event, properties: { ...event.properties } }))
   }
 
   getMetrics(tenantId: string): Record<string, number> {

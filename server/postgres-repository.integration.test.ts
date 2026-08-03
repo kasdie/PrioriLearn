@@ -452,6 +452,90 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
     })
   })
 
+  test('research consent applies only prospectively and revocation removes prior eligibility', async () => {
+    const user = await repository.createPersonalAccount({
+      email: 'research-consent@example.test',
+      password: 'research-password',
+      name: 'Research Consent Owner',
+      locale: 'en',
+    })
+
+    const beforeConsent = await repository.saveEvent({
+      tenantId: user.tenantId,
+      userId: user.id,
+      name: 'workspace_opened',
+      properties: {},
+    })
+    expect(beforeConsent.researchEligible).toBe(false)
+
+    await repository.saveConsent({
+      id: randomUUID(),
+      tenantId: user.tenantId,
+      userId: user.id,
+      purpose: 'research_metrics',
+      granted: true,
+      source: 'settings',
+      createdAt: new Date().toISOString(),
+    })
+    const afterConsent = await repository.saveEvent({
+      tenantId: user.tenantId,
+      userId: user.id,
+      name: 'focus_completed',
+      properties: {},
+    })
+    expect(afterConsent.researchEligible).toBe(true)
+
+    await repository.saveConsent({
+      id: randomUUID(),
+      tenantId: user.tenantId,
+      userId: user.id,
+      purpose: 'research_metrics',
+      granted: false,
+      source: 'settings',
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    })
+    expect(await repository.listProductEvents(user.tenantId, user.id)).toEqual([
+      expect.objectContaining({ id: beforeConsent.id, researchEligible: false }),
+      expect.objectContaining({ id: afterConsent.id, researchEligible: false }),
+    ])
+
+    const afterRevocation = await repository.saveEvent({
+      tenantId: user.tenantId,
+      userId: user.id,
+      name: 'focus_started',
+      properties: {},
+    })
+    expect(afterRevocation.researchEligible).toBe(false)
+
+    await repository.saveConsent({
+      id: randomUUID(),
+      tenantId: user.tenantId,
+      userId: user.id,
+      purpose: 'research_metrics',
+      granted: true,
+      source: 'settings',
+      createdAt: new Date(Date.now() + 2_000).toISOString(),
+    })
+    await Promise.all([
+      repository.saveEvent({
+        tenantId: user.tenantId,
+        userId: user.id,
+        name: 'workspace_opened',
+        properties: { concurrent: true },
+      }),
+      repository.saveConsent({
+        id: randomUUID(),
+        tenantId: user.tenantId,
+        userId: user.id,
+        purpose: 'research_metrics',
+        granted: false,
+        source: 'settings',
+        createdAt: new Date(Date.now() + 3_000).toISOString(),
+      }),
+    ])
+    expect((await repository.listProductEvents(user.tenantId, user.id)).every((event) => !event.researchEligible)).toBe(true)
+  })
+
   test('the lifecycle claim capability leases a tenant job and schedules a retry', async () => {
     const alice = await repository.findUserByEmail('alice@example.test')
     if (!alice) throw new Error('Test user was not created.')

@@ -82,6 +82,8 @@ All protected routes require the host-only HttpOnly session cookie and resolve t
 | `GET/POST /api/consents` | Read the audit trail or append a purpose-specific decision |
 | `GET/POST/DELETE /api/push-subscriptions/*` | Read configuration status and opt the current browser or every owned browser into/out of Web Push without exposing endpoints in URLs |
 | `GET/PUT /api/learner-profile` | Read or version-update the signed-in learner's self-reported coaching preferences |
+| `POST /api/events`, `GET /api/metrics/me` | Persist private product activity and return only the signed-in tenant's personal progress metrics |
+| `GET /api/account/export` | Export structured study data, plans, consent history, and personal product events without raw files or internal storage keys |
 | `DELETE /api/documents/:id`, `/api/account` | Delete raw/structured data in the authenticated tenant |
 
 Errors use `{ "error": { "code", "message", "details" } }`. Version conflicts return HTTP 409 and never apply partial mutations.
@@ -114,7 +116,8 @@ Each factor is normalized to 0-100. The scheduler consumes only confirmed tasks,
 - Google Sign-In verifies an ID token on the API and stores only the stable Google subject needed to link the account. Calendar and Canvas OAuth are not enabled in the current product scope.
 - Web Push is off by default. Subscriptions are tenant-scoped, consent is audited separately from email, forged endpoint URLs are constrained by HTTPS and public-address DNS checks, and the UI warns that task titles may appear on a device lock screen.
 - The extension uses `activeTab`; it reads Canvas context only after a user action and is read only.
-- Future institution analytics require separate research consent, aggregation, and a group size of at least 10. The schema has no path from cohort output to individual plans or learner profiles.
+- Product activity is retained for private progress metrics. Only activity created after explicit research consent is research-eligible, and revocation clears eligibility from the user's complete event history.
+- Future institution analytics require aggregation and a group size of at least 10. The schema has no path from cohort output to individual plans or learner profiles, and no institution analytics endpoint exists in V1.
 - Production token values belong in encrypted byte columns and must be encrypted with a managed key before the connector adapters are enabled.
 
 ## Deployment path

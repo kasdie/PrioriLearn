@@ -698,6 +698,12 @@ Synthesized from this design review. Each task derives from a decision recorded 
   - Surfaced by: Engineering test review - cookie auth, import confirmation, plan approval, and post-reload state cross frontend, API, and storage boundaries that component and repository tests cannot cover together.
   - Files: `e2e/`, `playwright.config.ts`, `package.json`, local test-server configuration, deployment documentation.
   - Verify: Playwright runs `register -> empty Today -> upload -> review -> confirm -> generate -> edit -> approve -> reload` with deterministic local dependencies; it covers session-expired draft recovery and import retry; the post-deploy smoke confirms relative `/api` rewrite, cookie login, and health against the stable Vercel alias.
+- [x] **T19 (P1)** - consent-aware research telemetry and bilingual ICS evidence.
+  - Product activity remains available to the signed-in student for private progress metrics regardless of research consent.
+  - Only events created after an explicit `research_metrics` grant are marked research-eligible; revocation atomically removes eligibility from all of that user's prior events without deleting personal history.
+  - Account export includes the user's product-event history and eligibility state. No aggregate or institution endpoint is introduced.
+  - ICS previews use the account locale for evidence and fallback labels, including Vietnamese assessment keywords.
+  - Migration `015_research_metrics_consent.sql`, API tests, and the disposable PostgreSQL/RLS lane cover the full contract.
 
 ## QA matrix
 
@@ -720,6 +726,7 @@ Synthesized from this design review. Each task derives from a decision recorded 
 | Repeated auth attempts | Yes | HTTP 429 with `Retry-After` after the configured limit |
 | Expired raw document | Yes | Object and metadata are deleted |
 | ICS import | Yes | Draft first, persistence only after confirmation |
+| Bilingual ICS evidence | Yes | Vietnamese and English accounts receive locale-matched evidence and untitled-event fallbacks; common Vietnamese assessment labels become reviewable tasks |
 | Failed import/plan request | Yes | Draft stays visible; inline recovery appears; no local-success state |
 | Partial dashboard data | Yes | Confirmed panels remain visible; recommendation/focus are disabled until required inputs recover |
 | First private workspace | Yes | Guided `Add data -> Review -> Build first plan` path; no false active-plan claims |
@@ -728,6 +735,7 @@ Synthesized from this design review. Each task derives from a decision recorded 
 | Bounded real-data reads | Yes | Current-plan lookup uses a bounded set-based query; task/data collections paginate at 50 by default and 100 maximum without an unbounded client-side history fetch |
 | Extraction confidence review | Yes | Required invalid fields block confirmation; nullable uncertainty becomes explicit Unknown |
 | Permission revoke/account delete | Yes | Purpose-specific revoke does not break other workflows; deletion receipt reflects actual cleanup state |
+| Research metrics consent | Yes | Events before opt-in remain private-only; events after opt-in become eligible; revocation clears eligibility from the full personal history while preserving private progress metrics |
 | Scheduled lifecycle dispatch | Yes | Vercel Cron reaches only its protected function; a hardened bounded claim leases due queue jobs; a missed/failed run or expired lease leaves work eligible for the next daily retry |
 | Desktop accessibility | Manual | Keyboard-only task flow, WCAG AA contrast, modal focus restoration, and 200% zoom reflow |
 | Connector denial/revocation | Partial | Fallback remains available; full OAuth tests before alpha |

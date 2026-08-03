@@ -37,18 +37,11 @@ import {
   type IcsImportResult,
   type PlanProposalInput,
   type PlanningPreferencesInput,
+  type ProductEvent,
   type Repository,
 } from './repository.js'
 
 type Row = Record<string, unknown>
-type ProductEvent = {
-  id: string
-  tenantId: string
-  userId: string
-  name: string
-  properties: Record<string, unknown>
-  createdAt: string
-}
 
 const afterHours = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString()
 const hashSessionToken = (token: string) => createHash('sha256').update(token).digest('hex')
@@ -1337,7 +1330,17 @@ export class PostgresRepository implements Repository {
 
   async saveConsent(consent: ConsentAudit): Promise<ConsentAudit> {
     await this.withTenant(consent.tenantId, async (client) => {
+      await client.query(
+        'SELECT id FROM users WHERE tenant_id = $1 AND id = $2 FOR UPDATE',
+        [consent.tenantId, consent.userId],
+      )
       await client.query('INSERT INTO consent_audits (id, tenant_id, user_id, purpose, granted, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)', [consent.id, consent.tenantId, consent.userId, consent.purpose, consent.granted, consent.source, consent.createdAt])
+      if (consent.purpose === 'research_metrics' && !consent.granted) {
+        await client.query(
+          'UPDATE product_events SET research_eligible = false WHERE tenant_id = $1 AND user_id = $2 AND research_eligible = true',
+          [consent.tenantId, consent.userId],
+        )
+      }
     })
     return consent
   }
@@ -1908,12 +1911,56 @@ export class PostgresRepository implements Repository {
     })
   }
 
-  async saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt'>): Promise<ProductEvent> {
+  async saveEvent(event: Omit<ProductEvent, 'id' | 'createdAt' | 'researchEligible'>): Promise<ProductEvent> {
     return this.withTenant(event.tenantId, async (client) => {
-      const result = await client.query<Row>('INSERT INTO product_events (tenant_id, user_id, name, properties) VALUES ($1, $2, $3, $4) RETURNING *', [event.tenantId, event.userId, event.name, JSON.stringify(event.properties)])
+      await client.query(
+        'SELECT id FROM users WHERE tenant_id = $1 AND id = $2 FOR UPDATE',
+        [event.tenantId, event.userId],
+      )
+      const result = await client.query<Row>(
+        `INSERT INTO product_events (tenant_id, user_id, name, properties, research_eligible)
+         VALUES (
+           $1, $2, $3, $4,
+           COALESCE((
+             SELECT granted
+             FROM consent_audits
+             WHERE tenant_id = $1 AND user_id = $2 AND purpose = 'research_metrics'
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+           ), false)
+         )
+         RETURNING *`,
+        [event.tenantId, event.userId, event.name, JSON.stringify(event.properties)],
+      )
       const row = result.rows[0]
       if (!row) throw new Error('EVENT_SAVE_FAILED')
-      return { id: String(row.id), tenantId: String(row.tenant_id), userId: String(row.user_id), name: String(row.name), properties: json<Record<string, unknown>>(row.properties, {}), createdAt: iso(row.created_at) }
+      return {
+        id: String(row.id),
+        tenantId: String(row.tenant_id),
+        userId: String(row.user_id),
+        name: String(row.name),
+        properties: json<Record<string, unknown>>(row.properties, {}),
+        researchEligible: Boolean(row.research_eligible),
+        createdAt: iso(row.created_at),
+      }
+    })
+  }
+
+  async listProductEvents(tenantId: string, userId: string): Promise<ProductEvent[]> {
+    return this.withTenant(tenantId, async (client) => {
+      const result = await client.query<Row>(
+        'SELECT * FROM product_events WHERE tenant_id = $1 AND user_id = $2 ORDER BY created_at, id',
+        [tenantId, userId],
+      )
+      return result.rows.map((row) => ({
+        id: String(row.id),
+        tenantId: String(row.tenant_id),
+        userId: String(row.user_id),
+        name: String(row.name),
+        properties: json<Record<string, unknown>>(row.properties, {}),
+        researchEligible: Boolean(row.research_eligible),
+        createdAt: iso(row.created_at),
+      }))
     })
   }
 

@@ -208,9 +208,47 @@ describe('PrioriLearn API', () => {
       availabilityBlocks: expect.any(Array),
       plans: expect.any(Array),
       consents: expect.any(Array),
+      productEvents: expect.any(Array),
     })
     expect(JSON.stringify(response.body)).not.toContain('storageKey')
     expect(JSON.stringify(response.body)).not.toContain('idempotencyKey')
+  })
+
+  it('keeps personal activity while research consent controls aggregate eligibility', async () => {
+    const beforeConsent = await request(context.app)
+      .post('/api/events')
+      .set(authorized())
+      .send({ name: 'focus_started', properties: { source: 'test' } })
+      .expect(202)
+    expect(beforeConsent.body.event.researchEligible).toBe(false)
+
+    await request(context.app)
+      .post('/api/consents')
+      .set(authorized())
+      .send({ purpose: 'research_metrics', granted: true, source: 'settings' })
+      .expect(201)
+
+    const afterConsent = await request(context.app)
+      .post('/api/events')
+      .set(authorized())
+      .send({ name: 'focus_completed', properties: { source: 'test' } })
+      .expect(202)
+    expect(afterConsent.body.event.researchEligible).toBe(true)
+
+    await request(context.app)
+      .post('/api/consents')
+      .set(authorized())
+      .send({ purpose: 'research_metrics', granted: false, source: 'settings' })
+      .expect(201)
+
+    const exported = await request(context.app).get('/api/account/export').set(authorized()).expect(200)
+    expect(exported.body.productEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'focus_started', researchEligible: false }),
+      expect.objectContaining({ name: 'focus_completed', researchEligible: false }),
+    ]))
+
+    const metrics = await request(context.app).get('/api/metrics/me').set(authorized()).expect(200)
+    expect(metrics.body.metrics).toMatchObject({ focus_started: 1, focus_completed: 1 })
   })
 
   it('keeps learner signals tenant-private, versioned, and exportable', async () => {
@@ -1219,6 +1257,7 @@ describe('PrioriLearn API', () => {
       .expect(201)
     expect(preview.body.draft.status).toBe('review')
     expect(preview.body.draft.busyBlocks).toHaveLength(1)
+    expect(preview.body.draft.tasks[0].evidence).toEqual(['Được nhập từ mục VTODO trong tệp ICS'])
 
     const confirmation = await request(context.app)
       .post(`/api/imports/${preview.body.draft.id}/confirm`)

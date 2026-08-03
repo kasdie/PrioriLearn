@@ -898,13 +898,15 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
   }))
 
   app.post('/api/imports/ics', requireAuth, uploadDocument.single('file'), asyncRoute(async (request, response) => {
-    const { tenant } = getAuth(response)
+    const { user, tenant } = getAuth(response)
     if (!request.file) throw new ApiError(400, 'FILE_REQUIRED', 'Attach one ICS file in the file field.')
     let preview: ReturnType<typeof parseIcsPreview>
     try {
-      preview = parseIcsPreview(request.file.buffer.toString('utf8'))
+      preview = parseIcsPreview(request.file.buffer.toString('utf8'), user.locale)
     } catch {
-      throw new ApiError(400, 'INVALID_ICS', 'The calendar file could not be parsed.')
+      throw new ApiError(400, 'INVALID_ICS', user.locale === 'vi'
+        ? 'Không thể đọc tệp lịch ICS.'
+        : 'The calendar file could not be parsed.')
     }
     const draft: ImportDraft = {
       id: randomUUID(),
@@ -1406,7 +1408,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
 
   app.get('/api/account/export', requireAuth, asyncRoute(async (_request, response) => {
     const { user, tenant } = getAuth(response)
-    const [courses, tasks, documents, availabilityBlocks, plans, consents, learnerProfile, planningPreferences] = await Promise.all([
+    const [courses, tasks, documents, availabilityBlocks, plans, consents, learnerProfile, planningPreferences, productEvents] = await Promise.all([
       repository.listCourses(tenant.id),
       repository.listTasks(tenant.id),
       repository.listDocuments(tenant.id),
@@ -1415,6 +1417,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       repository.listConsents(tenant.id),
       repository.getLearnerProfile(tenant.id, user.id),
       repository.getPlanningPreferences(tenant.id, user.id),
+      repository.listProductEvents(tenant.id, user.id),
     ])
     const sourceDocuments = documents.map(({ storageKey: _storageKey, idempotencyKey: _idempotencyKey, ...document }) => document)
     response.setHeader('Content-Disposition', `attachment; filename="priorilearn-export-${new Date().toISOString().slice(0, 10)}.json"`)
@@ -1431,6 +1434,7 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
       consents,
       learnerProfile: publicLearnerProfile(learnerProfile),
       planningPreferences: planningPreferences ?? null,
+      productEvents,
     })
   }))
 
