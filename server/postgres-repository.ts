@@ -86,6 +86,8 @@ function rowUser(row: Row): User {
     name: String(row.name),
     locale: row.locale as User['locale'],
     role: row.role as User['role'],
+    onboardingGuideSeenVersion: Number(row.onboarding_guide_seen_version ?? 0),
+    onboardingGuideSeenAt: row.onboarding_guide_seen_at ? iso(row.onboarding_guide_seen_at) : undefined,
     createdAt: iso(row.created_at),
   }
 }
@@ -370,6 +372,7 @@ export class PostgresRepository implements Repository {
   async seedDemo(): Promise<void> {
     const existing = await this.findUserByEmail('mai@demo.priorilearn.app')
     if (existing) {
+      await this.markOnboardingGuideSeen(existing.tenantId, existing.id, 1)
       this.demoUserId = existing.id
       return
     }
@@ -378,6 +381,7 @@ export class PostgresRepository implements Repository {
       email: 'mai@demo.priorilearn.app', password: 'demo-priorilearn', name: 'Mai Nguyen', locale: 'vi',
     })
     await this.markEmailVerified(user.tenantId, user.id)
+    await this.markOnboardingGuideSeen(user.tenantId, user.id, 1)
     user.emailVerifiedAt = user.emailVerifiedAt ?? new Date().toISOString()
     this.demoUserId = user.id
     const programming = await this.createCourse(user.tenantId, { code: 'CS304', name: 'Programming', currentScore: 54, targetScore: 78 })
@@ -458,6 +462,24 @@ export class PostgresRepository implements Repository {
          WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
          RETURNING *`,
         [userId, tenantId, locale],
+      )
+      return row ? rowUser(row) : undefined
+    })
+  }
+
+  async markOnboardingGuideSeen(tenantId: string, userId: string, version: number): Promise<User | undefined> {
+    return this.withTenant(tenantId, async (client) => {
+      const row = await this.oneOrUndefined(
+        client,
+        `UPDATE users
+         SET onboarding_guide_seen_version = GREATEST(onboarding_guide_seen_version, $3),
+             onboarding_guide_seen_at = CASE
+               WHEN onboarding_guide_seen_version < $3 THEN now()
+               ELSE onboarding_guide_seen_at
+             END
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         RETURNING *`,
+        [userId, tenantId, version],
       )
       return row ? rowUser(row) : undefined
     })
@@ -636,7 +658,8 @@ export class PostgresRepository implements Repository {
       const row = await this.oneOrUndefined(
         client,
         `SELECT u.id AS user_id, u.tenant_id AS user_tenant_id, u.email, u.email_verified_at, u.google_subject,
-          u.password_hash, u.name AS user_name, u.locale, u.role, u.created_at AS user_created_at,
+          u.password_hash, u.name AS user_name, u.locale, u.role,
+          u.onboarding_guide_seen_version, u.onboarding_guide_seen_at, u.created_at AS user_created_at,
           t.id AS tenant_id, t.kind, t.name AS tenant_name, t.created_at AS tenant_created_at
          FROM auth_sessions s JOIN users u ON u.id = s.user_id JOIN tenants t ON t.id = s.tenant_id
          WHERE s.token_hash = $1 AND s.user_id = $2 AND s.tenant_id = $3
@@ -655,6 +678,8 @@ export class PostgresRepository implements Repository {
           name: String(row.user_name),
           locale: row.locale as User['locale'],
           role: row.role as User['role'],
+          onboardingGuideSeenVersion: Number(row.onboarding_guide_seen_version ?? 0),
+          onboardingGuideSeenAt: row.onboarding_guide_seen_at ? iso(row.onboarding_guide_seen_at) : undefined,
           createdAt: iso(row.user_created_at),
         },
         tenant: { id: String(row.tenant_id), kind: row.kind as Tenant['kind'], name: String(row.tenant_name), createdAt: iso(row.tenant_created_at) },

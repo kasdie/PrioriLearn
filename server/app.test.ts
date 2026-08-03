@@ -1184,6 +1184,49 @@ describe('PrioriLearn API', () => {
     expect(restored.body.session.user.locale).toBe('en')
   })
 
+  it('persists the current onboarding guide version once per authenticated account', async () => {
+    const registration = await request(context.app)
+      .post('/api/auth/register')
+      .send({ email: 'guide@example.test', password: 'strong-password', name: 'Guide User', locale: 'en' })
+      .expect(201)
+    const privateCookie = sessionCookie(registration)
+    expect(registration.body.user).toMatchObject({ onboardingGuideSeenVersion: 0 })
+    expect(registration.body.user.onboardingGuideSeenAt).toBeUndefined()
+
+    await request(context.app)
+      .put('/api/me/onboarding-guide/seen')
+      .send({ version: 1 })
+      .expect(401)
+
+    const first = await request(context.app)
+      .put('/api/me/onboarding-guide/seen')
+      .set({ Cookie: privateCookie })
+      .send({ version: 1 })
+      .expect(200)
+    expect(first.body.user.onboardingGuideSeenVersion).toBe(1)
+    expect(first.body.user.onboardingGuideSeenAt).toEqual(expect.any(String))
+
+    const repeated = await request(context.app)
+      .put('/api/me/onboarding-guide/seen')
+      .set({ Cookie: privateCookie })
+      .send({ version: 1 })
+      .expect(200)
+    expect(repeated.body.user.onboardingGuideSeenAt).toBe(first.body.user.onboardingGuideSeenAt)
+
+    const invalid = await request(context.app)
+      .put('/api/me/onboarding-guide/seen')
+      .set({ Cookie: privateCookie })
+      .send({ version: 2 })
+      .expect(400)
+    expect(invalid.body.error.code).toBe('VALIDATION_ERROR')
+
+    const restored = await request(context.app)
+      .get('/api/auth/session')
+      .set({ Cookie: privateCookie })
+      .expect(200)
+    expect(restored.body.session.user).toMatchObject({ onboardingGuideSeenVersion: 1 })
+  })
+
   it('does not approve a weekly proposal while work is still unscheduled', async () => {
     const user = await context.repository.getDemoUser()
     const task = (await context.repository.listTasks(user.tenantId))[0]

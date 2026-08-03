@@ -14,6 +14,7 @@ import {
   GoogleLoginInputSchema,
   LoginInputSchema,
   LearnerProfileUpdateInputSchema,
+  OnboardingGuideSeenInputSchema,
   PasswordResetConfirmInputSchema,
   PasswordResetRequestInputSchema,
   PlanningChatInputSchema,
@@ -641,6 +642,15 @@ export async function createApplication(options: ApplicationOptions = {}): Promi
     const { user, tenant } = getAuth(response)
     const input = parseBody(UserLocaleInputSchema, request.body)
     const updated = await repository.updateUserLocale(tenant.id, user.id, input.locale)
+    if (!updated) throw new ApiError(404, 'USER_NOT_FOUND', 'User was not found.')
+    response.locals.auth = { user: updated, tenant }
+    response.json({ user: publicUser(updated), tenant })
+  }))
+
+  app.put('/api/me/onboarding-guide/seen', requireAuth, asyncRoute(async (request, response) => {
+    const { user, tenant } = getAuth(response)
+    const input = parseBody(OnboardingGuideSeenInputSchema, request.body)
+    const updated = await repository.markOnboardingGuideSeen(tenant.id, user.id, input.version)
     if (!updated) throw new ApiError(404, 'USER_NOT_FOUND', 'User was not found.')
     response.locals.auth = { user: updated, tenant }
     response.json({ user: publicUser(updated), tenant })

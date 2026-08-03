@@ -5,7 +5,8 @@ import { prioriApi } from './api'
 const sessionPayload = {
   user: {
     id: 'user-1', tenantId: 'tenant-1', email: 'student@example.test', name: 'Student',
-    locale: 'en', role: 'student', emailVerified: true, createdAt: '2026-07-20T00:00:00.000Z',
+    locale: 'en', role: 'student', emailVerified: true, onboardingGuideSeenVersion: 1,
+    createdAt: '2026-07-20T00:00:00.000Z',
   },
   tenant: { id: 'tenant-1', kind: 'personal', name: 'Student', createdAt: '2026-07-20T00:00:00.000Z' },
 }

@@ -154,6 +154,8 @@ export type ApiUser = {
   locale: 'vi' | 'en'
   role: 'student' | 'institution_admin'
   emailVerified: boolean
+  onboardingGuideSeenVersion: number
+  onboardingGuideSeenAt?: string
   createdAt: string
 }
 
@@ -399,6 +401,13 @@ export const prioriApi = {
     return apiFetch<ApiSession>('/me', {
       method: 'PATCH',
       body: JSON.stringify({ locale }),
+    })
+  },
+
+  async markOnboardingGuideSeen(version: 1): Promise<ApiSession> {
+    return apiFetch<ApiSession>('/me/onboarding-guide/seen', {
+      method: 'PUT',
+      body: JSON.stringify({ version }),
     })
   },
 

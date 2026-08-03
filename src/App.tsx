@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CircleAlert,
   CircleCheck,
+  CircleHelp,
   Clock3,
   Download,
   FileText,
@@ -38,6 +39,7 @@ import { AuthScreen } from './AuthScreen'
 import { useImportFlow } from './features/import/useImportFlow'
 import { ExtractionReviewEditor } from './features/import/ExtractionReviewEditor'
 import { WebPushSettings } from './features/notifications/WebPushSettings'
+import { ONBOARDING_GUIDE_VERSION, OnboardingGuide } from './features/onboarding/OnboardingGuide'
 import { LearnerProfilePanel } from './features/profile/LearnerProfilePanel'
 import { PlanProposalEditor } from './features/plan/PlanProposalEditor'
 import { usePlanFlow } from './features/plan/usePlanFlow'
@@ -232,6 +234,8 @@ function App() {
   const sessionFlow = useSession({ locale, onLocaleChange: setLocale })
   const { session, checking: authChecking, notice: authNotice } = sessionFlow
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [onboardingGuideOpen, setOnboardingGuideOpen] = useState(false)
+  const [onboardingGuideDismissedUserId, setOnboardingGuideDismissedUserId] = useState<string | null>(null)
   const [authAction, setAuthAction] = useState<AuthAction | null>(() => readAuthAction())
   const [activeView, setActiveView] = useState<View>('today')
   const [replanOpen, setReplanOpen] = useState(false)
@@ -272,7 +276,9 @@ function App() {
   const documentInputRef = useRef<HTMLInputElement>(null)
   const calendarInputRef = useRef<HTMLInputElement>(null)
   const accountMenuRef = useRef<HTMLDivElement>(null)
+  const onboardingHelpRef = useRef<HTMLButtonElement>(null)
   const deletionReceiptRequestRef = useRef(false)
+  const sessionUserIdRef = useRef<string | null>(null)
   const t = copy[locale]
   const recommendation = dashboard?.recommendation ?? null
   const rankedTasks = useMemo(() => dashboard?.rankedTasks ?? [], [dashboard?.rankedTasks])
@@ -324,6 +330,21 @@ function App() {
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  useEffect(() => {
+    sessionUserIdRef.current = session?.user.id ?? null
+    if (!session) {
+      setOnboardingGuideOpen(false)
+      setOnboardingGuideDismissedUserId(null)
+      return
+    }
+    if (
+      session.user.onboardingGuideSeenVersion < ONBOARDING_GUIDE_VERSION
+      && onboardingGuideDismissedUserId !== session.user.id
+    ) {
+      setOnboardingGuideOpen(true)
+    }
+  }, [onboardingGuideDismissedUserId, session])
 
   const refreshWorkspace = useCallback(async () => {
     const [nextDashboard, taskData, nextMetrics, nextPlanningPreferences] = await Promise.all([
@@ -424,6 +445,7 @@ function App() {
   const reviewOpen = Boolean(importReview)
 
   const handleAuthenticated = async (nextSession: ApiSession) => {
+    setOnboardingGuideDismissedUserId(null)
     sessionFlow.authenticate(nextSession)
   }
 
@@ -452,6 +474,32 @@ function App() {
     setReplanApproved(false)
     setActiveView('today')
     setAccountMenuOpen(false)
+    setOnboardingGuideOpen(false)
+    setOnboardingGuideDismissedUserId(null)
+  }
+
+  const dismissOnboardingGuide = (startWithData: boolean) => {
+    setOnboardingGuideOpen(false)
+    if (!session) return
+    const userId = session.user.id
+    setOnboardingGuideDismissedUserId(userId)
+    if (startWithData) setActiveView('imports')
+    if (session.user.onboardingGuideSeenVersion >= ONBOARDING_GUIDE_VERSION) return
+
+    void prioriApi.markOnboardingGuideSeen(ONBOARDING_GUIDE_VERSION)
+      .then((updatedSession) => {
+        if (sessionUserIdRef.current === userId) sessionFlow.authenticate(updatedSession)
+      })
+      .catch((error) => {
+        if (sessionUserIdRef.current !== userId) return
+        setToast(userFacingError(
+          error,
+          locale,
+          locale === 'vi'
+            ? 'Chưa thể lưu trạng thái hướng dẫn. Bảng có thể xuất hiện lại ở lần đăng nhập sau.'
+            : 'Guide status could not be saved. It may appear again after your next sign-in.',
+        ))
+      })
   }
 
   useEffect(() => {
@@ -1000,6 +1048,18 @@ function App() {
         <header className="topbar">
           <div className="crumb"><span>{todayLabel}</span><span className="dot" /> <span>{hasConfirmedTasks ? (planApproved ? t.approved : t.schedule) : (locale === 'vi' ? 'Thiết lập không gian học' : 'Set up workspace')}</span></div>
           <div className="top-actions">
+            <button
+              ref={onboardingHelpRef}
+              className="icon-button"
+              type="button"
+              title={locale === 'vi' ? 'Hướng dẫn sử dụng' : 'How to use PrioriLearn'}
+              aria-label={locale === 'vi' ? 'Mở hướng dẫn sử dụng' : 'Open usage guide'}
+              aria-haspopup="dialog"
+              aria-expanded={onboardingGuideOpen}
+              onClick={() => setOnboardingGuideOpen(true)}
+            >
+              <CircleHelp size={18} />
+            </button>
             <button className="icon-button mobile-account-button" type="button" title={locale === 'vi' ? 'Đăng xuất' : 'Sign out'} aria-label={locale === 'vi' ? 'Đăng xuất' : 'Sign out'} onClick={() => void logout()}><LogOut size={18} /></button>
             <div className="language-switch" aria-label={locale === 'vi' ? 'Ngôn ngữ' : 'Language'}>
               <button className={locale === 'vi' ? 'selected' : ''} onClick={() => void sessionFlow.changeLocale('vi')} type="button">VI</button>
@@ -1167,6 +1227,14 @@ function App() {
           </aside>
         </div>
       </section>
+
+      {onboardingGuideOpen && <OnboardingGuide
+        locale={locale}
+        returnFocusRef={onboardingHelpRef}
+        onLocaleChange={(nextLocale) => void sessionFlow.changeLocale(nextLocale)}
+        onDismiss={() => dismissOnboardingGuide(false)}
+        onStart={() => dismissOnboardingGuide(true)}
+      />}
 
       {manualTaskOpen && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="manual-task-title">
         <form className="manual-task-modal" onSubmit={(event) => void saveManualTask(event)}>

@@ -93,6 +93,7 @@ export interface Repository {
   getUser(tenantId: string, userId: string): Awaitable<User | undefined>
   getTenantDefaultLocale(tenantId: string): Awaitable<User['locale'] | undefined>
   updateUserLocale(tenantId: string, userId: string, locale: User['locale']): Awaitable<User | undefined>
+  markOnboardingGuideSeen(tenantId: string, userId: string, version: number): Awaitable<User | undefined>
   linkGoogleSubject(tenantId: string, userId: string, googleSubject: string): Awaitable<User | undefined>
   markEmailVerified(tenantId: string, userId: string): Awaitable<User | undefined>
   createAuthActionToken(user: User, purpose: AuthActionPurpose, tokenHash: string, expiresAt: string): Awaitable<void>
@@ -237,6 +238,8 @@ export class InMemoryRepository implements Repository {
       locale: 'vi',
       role: 'student',
       passwordHash: await hashPassword('demo-priorilearn'),
+      onboardingGuideSeenVersion: 1,
+      onboardingGuideSeenAt: createdAt,
       createdAt,
     })
     this.demoUserId = userId
@@ -312,6 +315,7 @@ export class InMemoryRepository implements Repository {
       passwordHash: await hashPassword(input.password),
       googleSubject: input.googleSubject,
       emailVerifiedAt: input.googleSubject ? createdAt : undefined,
+      onboardingGuideSeenVersion: 0,
       createdAt,
     }
     this.tenants.set(tenant.id, tenant)
@@ -421,6 +425,19 @@ export class InMemoryRepository implements Repository {
     const user = this.getUser(tenantId, userId)
     if (!user) return undefined
     const updated = { ...user, locale }
+    this.users.set(user.id, updated)
+    return updated
+  }
+
+  markOnboardingGuideSeen(tenantId: string, userId: string, version: number): User | undefined {
+    const user = this.getUser(tenantId, userId)
+    if (!user) return undefined
+    if (user.onboardingGuideSeenVersion >= version) return user
+    const updated = {
+      ...user,
+      onboardingGuideSeenVersion: version,
+      onboardingGuideSeenAt: nowIso(),
+    }
     this.users.set(user.id, updated)
     return updated
   }

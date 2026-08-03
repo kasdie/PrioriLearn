@@ -23,6 +23,8 @@ export type User = {
   locale: Locale
   role: 'student' | 'institution_admin'
   passwordHash: string
+  onboardingGuideSeenVersion: number
+  onboardingGuideSeenAt?: string
   createdAt: string
 }
 
@@ -445,6 +447,10 @@ export const PlanApprovalInputSchema = z.object({
 
 export const UserLocaleInputSchema = z.object({
   locale: LocaleSchema,
+})
+
+export const OnboardingGuideSeenInputSchema = z.object({
+  version: z.literal(1),
 })
 
 export const PlanItemEditSchema = z.object({

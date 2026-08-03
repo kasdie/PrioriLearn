@@ -11,8 +11,38 @@ test('private student completes multi-file review, weekly planning, approval, an
   await page.locator('input[type="password"]').fill('private-e2e-password')
   await page.getByRole('button', { name: 'Create account' }).last().click()
 
-  await expect(page.getByRole('heading', { name: 'Add data -> Review -> Build first plan' })).toBeVisible()
-  await page.getByRole('button', { name: 'Add data' }).first().click()
+  const guide = page.getByRole('dialog', { name: 'Get started with PrioriLearn' })
+  await expect(guide).toBeVisible()
+  await expect(guide.getByText('AI proposes, you decide')).toBeVisible()
+  const guideAccessibility = await new AxeBuilder({ page })
+    .include('.onboarding-guide')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze()
+  const guideAccessibilityIssues = guideAccessibility.violations.flatMap((violation) => (
+    violation.nodes.map((node) => ({
+      id: violation.id,
+      target: node.target,
+      summary: node.failureSummary,
+    }))
+  ))
+  expect(guideAccessibilityIssues).toEqual([])
+  for (let press = 0; press < 12; press += 1) await page.keyboard.press('Tab')
+  expect(await guide.evaluate((element) => element.contains(document.activeElement))).toBe(true)
+  const seenResponse = page.waitForResponse((response) => (
+    response.url().includes('/api/me/onboarding-guide/seen')
+    && response.request().method() === 'PUT'
+  ))
+  await guide.getByRole('button', { name: 'Maybe later' }).click()
+  expect((await seenResponse).status()).toBe(200)
+  await expect(guide).toBeHidden()
+
+  await page.reload()
+  await expect(page.getByRole('dialog', { name: 'Get started with PrioriLearn' })).toHaveCount(0)
+  const helpButton = page.getByRole('button', { name: 'Open usage guide' })
+  await helpButton.click()
+  await expect(guide).toBeVisible()
+  await guide.getByRole('button', { name: /Start adding data/ }).click()
+  await expect(page.getByRole('heading', { name: 'Connect your semester context' })).toBeVisible()
   await page.locator('input[type=file]').first().setInputFiles([
     {
       name: 'semester.csv',
@@ -86,6 +116,33 @@ test('private student completes multi-file review, weekly planning, approval, an
   await expect(page.getByRole('heading', { name: 'Deletion in progress' })).toBeVisible()
   await expect(page.getByText('Receipt ID')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Return to sign in' })).toBeVisible()
+})
+
+test('a guide status failure never blocks the current workspace', async ({ page }) => {
+  const email = `guide-retry-${Date.now()}@example.test`
+  await page.route('**/api/me/onboarding-guide/seen', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'GUIDE_STATUS_UNAVAILABLE', message: 'Temporary guide status failure.' } }),
+  }))
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'EN', exact: true }).click()
+  await page.getByRole('button', { name: 'Create account' }).click()
+  await page.getByLabel('Your name').fill('Guide Retry Student')
+  await page.getByLabel('Email').fill(email)
+  await page.locator('input[type="password"]').fill('private-e2e-password')
+  await page.getByRole('button', { name: 'Create account' }).last().click()
+
+  const guide = page.getByRole('dialog', { name: 'Get started with PrioriLearn' })
+  await expect(guide).toBeVisible()
+  await guide.getByRole('button', { name: 'Maybe later' }).click()
+  await expect(guide).toBeHidden()
+  await expect(page.locator('.toast')).toContainText('Temporary guide status failure.')
+  await expect(page.getByRole('heading', { name: 'Add data -> Review -> Build first plan' })).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole('dialog', { name: 'Get started with PrioriLearn' })).toBeVisible()
 })
 
 test('desktop workspace keeps controls named, traps dialog focus, and passes WCAG checks', async ({ page }) => {
@@ -168,6 +225,13 @@ test('an expired session keeps the current-tab task draft through sign-in', asyn
   await page.getByLabel('Email').fill(email)
   await page.locator('input[type="password"]').fill(password)
   await page.getByRole('button', { name: 'Create account' }).last().click()
+
+  const seenResponse = page.waitForResponse((response) => (
+    response.url().includes('/api/me/onboarding-guide/seen')
+    && response.request().method() === 'PUT'
+  ))
+  await page.getByRole('dialog', { name: 'Get started with PrioriLearn' }).getByRole('button', { name: 'Maybe later' }).click()
+  await seenResponse
 
   await page.getByRole('button', { name: 'Data', exact: true }).click()
   await page.getByRole('button', { name: 'Add task', exact: true }).click()

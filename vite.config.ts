@@ -6,6 +6,7 @@ import { sentryVitePlugin } from '@sentry/vite-plugin'
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const devApiOrigin = env.DEV_API_ORIGIN || 'http://127.0.0.1:8787'
   const sentryBuildConfigured = Boolean(
     env.SENTRY_AUTH_TOKEN && env.SENTRY_ORG && env.SENTRY_PROJECT,
   )
@@ -32,7 +33,7 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       port: 4173,
       proxy: {
-        '/api': 'http://127.0.0.1:8787',
+        '/api': devApiOrigin,
       },
     },
     test: {

@@ -76,6 +76,25 @@ describe.skipIf(!postgresTestsEnabled)('PostgresRepository tenant boundary', () 
     expect(await repository.resolveSession('not-a-real-session')).toBeUndefined()
   })
 
+  test('onboarding guide state is idempotent and tenant scoped', async () => {
+    const alice = await repository.findUserByEmail('alice@example.test')
+    const bob = await repository.findUserByEmail('bob@example.test')
+    if (!alice || !bob) throw new Error('Test users were not created.')
+    expect(alice.onboardingGuideSeenVersion).toBe(0)
+
+    const seen = await repository.markOnboardingGuideSeen(alice.tenantId, alice.id, 1)
+    expect(seen?.onboardingGuideSeenVersion).toBe(1)
+    expect(seen?.onboardingGuideSeenAt).toEqual(expect.any(String))
+
+    const repeated = await repository.markOnboardingGuideSeen(alice.tenantId, alice.id, 1)
+    expect(repeated?.onboardingGuideSeenAt).toBe(seen?.onboardingGuideSeenAt)
+    expect(await repository.markOnboardingGuideSeen(bob.tenantId, alice.id, 1)).toBeUndefined()
+
+    const token = await repository.createSession(seen!)
+    const restored = await repository.resolveSession(token)
+    expect(restored?.user.onboardingGuideSeenVersion).toBe(1)
+  })
+
   test('missing and wrong tenant context cannot read or create tenant data', async () => {
     const alice = await repository.findUserByEmail('alice@example.test')
     const bob = await repository.findUserByEmail('bob@example.test')
